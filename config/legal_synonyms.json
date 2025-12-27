@@ -1,0 +1,164 @@
+{
+    "domestic violence": [
+        "assault and battery against a family or household member",
+        "family abuse", "18.2-57.2", "domestic assault", "family member assault"
+    ],
+    "domestic assault": [
+        "assault and battery against a family or household member",
+        "family abuse", "18.2-57.2", "domestic violence", "household member"
+    ],
+    "family violence": [
+        "assault and battery against a family or household member",
+        "family abuse", "18.2-57.2", "domestic violence"
+    ],
+    "spousal abuse": [
+        "assault and battery against a family or household member",
+        "family abuse", "18.2-57.2", "domestic violence"
+    ],
+    "dui": [
+        "driving while intoxicated", "driving under the influence",
+        "18.2-266", "DWI", "drunk driving", "impaired driving"
+    ],
+    "dwi": [
+        "driving while intoxicated", "driving under the influence",
+        "18.2-266", "DUI", "drunk driving"
+    ],
+    "drunk driving": [
+        "driving while intoxicated", "18.2-266", "DUI", "DWI"
+    ],
+    "protective order": [
+        "emergency protective order", "preliminary protective order",
+        "19.2-152.8", "19.2-152.9", "19.2-152.10", "EPO", "PPO"
+    ],
+    "restraining order": [
+        "protective order", "emergency protective order",
+        "19.2-152.8", "19.2-152.9", "19.2-152.10"
+    ],
+    "epo": [
+        "emergency protective order", "19.2-152.8", "protective order"
+    ],
+    "ppo": [
+        "preliminary protective order", "19.2-152.9", "protective order"
+    ],
+    "shoplifting": [
+        "concealing merchandise", "concealing or taking merchandise",
+        "larceny", "18.2-103", "theft"
+    ],
+    "grand larceny": [
+        "larceny", "18.2-95", "theft", "felony larceny"
+    ],
+    "petit larceny": [
+        "larceny", "18.2-96", "petty theft", "misdemeanor larceny"
+    ],
+    "petty larceny": [
+        "petit larceny", "18.2-96", "larceny", "misdemeanor theft"
+    ],
+    "theft": [
+        "larceny", "18.2-95", "18.2-96", "stealing"
+    ],
+    "assault": [
+        "assault and battery", "18.2-57", "simple assault"
+    ],
+    "battery": [
+        "assault and battery", "18.2-57"
+    ],
+    "aggravated assault": [
+        "malicious wounding", "18.2-51", "unlawful wounding"
+    ],
+    "drug possession": [
+        "possession of controlled substances", "18.2-250",
+        "possession of marijuana", "18.2-250.1"
+    ],
+    "marijuana possession": [
+        "possession of marijuana", "18.2-250.1", "cannabis"
+    ],
+    "drug distribution": [
+        "manufacturing selling distributing controlled substances",
+        "18.2-248", "drug trafficking"
+    ],
+    "concealed carry": [
+        "carrying concealed weapons", "18.2-308"
+    ],
+    "concealed weapon": [
+        "carrying concealed weapons", "18.2-308"
+    ],
+    "felon in possession": [
+        "possession of firearm by convicted felon", "18.2-308.2"
+    ],
+    "gun on school": [
+        "possession of firearm on school property", "18.2-308.1"
+    ],
+    "murder": [
+        "first degree murder", "second degree murder", "capital murder",
+        "18.2-31", "18.2-32", "homicide"
+    ],
+    "manslaughter": [
+        "voluntary manslaughter", "involuntary manslaughter",
+        "18.2-35", "18.2-36"
+    ],
+    "rape": [
+        "18.2-61", "sexual assault", "forcible"
+    ],
+    "sexual assault": [
+        "rape", "18.2-61", "forcible sodomy", "18.2-67.1",
+        "object sexual penetration", "18.2-67.2"
+    ],
+    "burglary": [
+        "breaking and entering", "18.2-89", "18.2-90", "18.2-91"
+    ],
+    "breaking and entering": [
+        "burglary", "18.2-89", "18.2-90", "entering dwelling"
+    ],
+    "forgery": [
+        "18.2-178", "uttering", "18.2-181"
+    ],
+    "fraud": [
+        "false statements to obtain property", "18.2-186", "forgery"
+    ],
+    "identity theft": [
+        "18.2-186.3", "identity fraud"
+    ],
+    "speedy trial": [
+        "discharge if not tried", "19.2-243", "right to speedy trial"
+    ],
+    "right to counsel": [
+        "court to appoint counsel", "19.2-163", "public defender"
+    ],
+    "bail": [
+        "admission to bail", "19.2-120", "bond", "19.2-123"
+    ],
+    "bond": [
+        "bail", "19.2-120", "secured bond", "unsecured bond", "19.2-123"
+    ],
+    "arrest": [
+        "arrest without warrant", "19.2-81", "warrantless arrest"
+    ],
+    "statute of limitations": [
+        "limitations", "8.01-243", "8.01-229", "8.01-249", "tolling"
+    ],
+    "sol": [
+        "statute of limitations", "limitations period", "8.01-243"
+    ],
+    "sovereign immunity": [
+        "8.01-195.3", "governmental immunity"
+    ],
+    "hearsay": [
+        "hearsay rule", "8.01-401"
+    ],
+    "certificate of analysis": [
+        "19.2-187", "lab report", "forensic evidence"
+    ],
+    "reckless driving": ["46.2-852", "46.2-862", "speeding 20 over", "80 mph"],
+    "driving suspended": ["46.2-301", "driving while license suspended", "suspended license"],
+    "strangulation": ["18.2-51.6", "choking", "impeding blood flow"],
+    "abduction": ["18.2-47", "kidnapping", "unlawful detention"],
+    "trespass": ["18.2-119", "trespassing", "unlawful entry"],
+    "destruction of property": ["18.2-137", "vandalism", "property damage"],
+    "disorderly conduct": ["18.2-415", "public disturbance"],
+    "obstruction": ["18.2-460", "obstruction of justice", "resisting arrest"],
+    "drunk in public": ["18.2-388", "public intoxication", "dip"],
+    "possession with intent": ["18.2-248", "pwid", "distribution"],
+    "preliminary hearing": ["19.2-218", "probable cause hearing"],
+    "grand jury": ["19.2-191", "indictment", "true bill"],
+    "expungement": ["19.2-392.2", "sealing records", "clearing record"]
+}

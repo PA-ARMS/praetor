@@ -1,0 +1,198 @@
+.settings-menu-container {
+  position: relative;
+  z-index: 10000;
+}
+
+.settings-menu-button {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(212, 175, 55, 0.1);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  color: #d4af37;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+  box-shadow: 0 0 15px rgba(212, 175, 55, 0.2);
+  position: relative;
+  z-index: 10002;
+}
+
+.settings-menu-button:hover {
+  background: rgba(212, 175, 55, 0.2);
+  border-color: rgba(212, 175, 55, 0.5);
+  box-shadow: 0 0 25px rgba(212, 175, 55, 0.4);
+  transform: rotate(90deg);
+}
+
+.settings-menu-dropdown {
+  position: fixed;
+  top: calc(100px + 10px);
+  right: 2rem;
+  width: 350px;
+  background: rgba(13, 27, 42, 0.95);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  border-radius: 16px;
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  box-shadow: 
+    0 25px 80px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 0 40px rgba(212, 175, 55, 0.2);
+  overflow: hidden;
+  animation: slideDown 0.3s ease;
+  z-index: 10001;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.settings-menu-header {
+  padding: 1.25rem;
+  border-bottom: 1px solid rgba(212, 175, 55, 0.3);
+  background: rgba(26, 58, 92, 0.3);
+}
+
+.settings-user-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.settings-user-name {
+  color: #d4af37;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.settings-user-role {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.85rem;
+  text-transform: capitalize;
+}
+
+.settings-menu-content {
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.settings-section {
+  padding: 1.25rem;
+  border-bottom: 1px solid rgba(212, 175, 55, 0.1);
+}
+
+.settings-section:last-of-type {
+  border-bottom: none;
+}
+
+.settings-section-title {
+  color: #d4af37;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 1rem;
+}
+
+.settings-admin-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.settings-admin-note {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0;
+  padding: 0.75rem;
+  background: rgba(26, 58, 92, 0.3);
+  border-radius: 8px;
+  border-left: 3px solid rgba(212, 175, 55, 0.5);
+}
+
+.settings-menu-footer {
+  padding: 1rem 1.25rem;
+  border-top: 1px solid rgba(212, 175, 55, 0.2);
+  background: rgba(13, 27, 42, 0.5);
+}
+
+.settings-logout-button {
+  width: 100%;
+  padding: 0.75rem;
+  background: rgba(220, 53, 69, 0.2);
+  border: 1px solid rgba(220, 53, 69, 0.4);
+  border-radius: 8px;
+  color: #ff6b7a;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.settings-logout-button:hover {
+  background: rgba(220, 53, 69, 0.3);
+  border-color: rgba(220, 53, 69, 0.6);
+  box-shadow: 0 0 15px rgba(220, 53, 69, 0.3);
+}
+
+/* Scrollbar styling */
+.settings-menu-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.settings-menu-content::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+}
+
+.settings-menu-content::-webkit-scrollbar-thumb {
+  background: rgba(212, 175, 55, 0.3);
+  border-radius: 10px;
+}
+
+.settings-menu-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(212, 175, 55, 0.5);
+}
+
+/* Voice settings styling within menu */
+.settings-section .voice-settings {
+  margin: 0;
+  background: rgba(26, 58, 92, 0.3);
+  border: 1px solid rgba(212, 175, 55, 0.2);
+}
+
+.learning-dashboard-button {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: linear-gradient(135deg, #28a745, #20c997);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  box-shadow: 0 0 15px rgba(40, 167, 69, 0.3);
+  margin-bottom: 0.5rem;
+}
+
+.learning-dashboard-button:hover {
+  background: linear-gradient(135deg, #218838, #1ea085);
+  box-shadow: 0 0 20px rgba(40, 167, 69, 0.5);
+  transform: translateY(-2px);
+}
+

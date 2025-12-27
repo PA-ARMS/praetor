@@ -1,0 +1,205 @@
+{
+    "18.2-57.2": {
+        "title": "Assault and Battery Against Family/Household Member",
+        "criminal_procedure": {
+            "19.2-81": "Warrantless arrest authorized for domestic violence",
+            "19.2-81.3": "Warrantless arrest for assault and battery against family member",
+            "19.2-152.8": "Emergency Protective Orders (EPO)",
+            "19.2-152.9": "Preliminary Protective Orders (PPO)",
+            "19.2-152.10": "Protective Orders"
+        },
+        "collateral_consequences": {
+            "18.2-308.1:8": "Firearm possession prohibited after domestic violence conviction",
+            "18.2-308.2": "Enhanced penalties for felon in possession of firearm"
+        },
+        "related_offenses": {
+            "18.2-57": "Simple assault and battery (general)",
+            "18.2-57.3": "Assault and battery against health care workers",
+            "18.2-60": "Abduction",
+            "18.2-60.1": "Enticement of child",
+            "18.2-63.2": "Stalking"
+        },
+        "civil_remedies": {
+            "8.01-229": "Personal injury actions - 2 year statute of limitations",
+            "16.1-253.4": "Juvenile court protective orders",
+            "20-103": "Divorce grounds (cruelty)"
+        },
+        "victim_services": {
+            "63.2-1612": "Domestic violence services and shelters",
+            "2.2-515.1": "Statewide Facilitator for Victims of Domestic Violence"
+        }
+    },
+    "18.2-266": {
+        "title": "Driving While Intoxicated",
+        "licensing_administration": {
+            "46.2-391": "DMV license suspension procedures",
+            "18.2-270": "DUI penalties and license suspension",
+            "18.2-271": "Forfeiture of driver's license"
+        },
+        "criminal_procedure": {
+            "19.2-187": "Certificate of analysis as evidence",
+            "18.2-268": "Preliminary breath test",
+            "18.2-268.1": "Preliminary breath test - under age 21",
+            "18.2-268.2": "Preliminary breath test - commercial vehicle"
+        },
+        "enhanced_penalties": {
+            "18.2-270.1": "Aggravated DUI penalties",
+            "18.2-272": "DUI causing serious injury or death",
+            "18.2-274": "Refusal to take blood/breath test"
+        },
+        "civil_administrative": {
+            "46.2-334.1": "Ignition interlock device requirements",
+            "46.2-334.3": "Restricted license with interlock"
+        }
+    },
+    "18.2-32": {
+        "title": "First and Second Degree Murder",
+        "capital_cases": {
+            "18.2-31": "Capital murder",
+            "19.2-264.3": "Capital murder trial procedures",
+            "19.2-264.4": "Jury sentencing in capital cases"
+        },
+        "manslaughter": {
+            "18.2-35": "Voluntary manslaughter",
+            "18.2-36": "Involuntary manslaughter"
+        },
+        "related_offenses": {
+            "18.2-33": "Felony homicide",
+            "18.2-34": "Poisoning",
+            "18.2-51": "Malicious wounding"
+        },
+        "criminal_procedure": {
+            "19.2-297.1": "Jury sentencing procedures",
+            "19.2-295.1": "Jury trial for sentencing",
+            "19.2-303": "Modification of sentence"
+        }
+    },
+    "18.2-95": {
+        "title": "Grand Larceny",
+        "petty_larceny": {
+            "18.2-96": "Petit larceny",
+            "18.2-103": "Concealing merchandise (shoplifting)"
+        },
+        "related_theft": {
+            "18.2-89": "Burglary",
+            "18.2-90": "Breaking and entering with intent to commit larceny",
+            "18.2-91": "Breaking and entering dwelling",
+            "18.2-178": "Forgery and uttering",
+            "18.2-181": "Uttering forged writings"
+        },
+        "receiving_stolen": {
+            "18.2-108": "Receiving stolen goods",
+            "18.2-109": "Possession of stolen goods"
+        }
+    },
+    "18.2-308": {
+        "title": "Carrying Concealed Weapons",
+        "firearm_prohibitions": {
+            "18.2-308.1": "Possession of firearm on school property",
+            "18.2-308.1:8": "Purchase/possession after domestic violence conviction",
+            "18.2-308.2": "Possession of firearm by convicted felon"
+        },
+        "ammunition": {
+            "18.2-308.3": "Carrying certain ammunition",
+            "18.2-308.4": "Purchase of firearm by minor"
+        },
+        "permits_licenses": {
+            "18.2-307": "Application for permit to carry concealed handgun",
+            "18.2-308.7": "One handgun per month limitation"
+        }
+    },
+    "18.2-61": {
+        "title": "Rape",
+        "related_sexual_offenses": {
+            "18.2-67.1": "Forcible sodomy",
+            "18.2-67.2": "Object sexual penetration",
+            "18.2-67.3": "Forcible sexual penetration with object",
+            "18.2-67.4": "Sexual penetration of child between 13-15"
+        },
+        "evidence_collection": {
+            "19.2-187.1": "Sexual assault evidence collection kits",
+            "19.2-187.2": "Analysis of sexual assault evidence"
+        },
+        "victim_protection": {
+            "18.2-61.1": "Rape victim counseling confidentiality",
+            "18.2-61.2": "Rape shield statute"
+        }
+    },
+    "18.2-178": {
+        "title": "Forgery",
+        "related_fraud": {
+            "18.2-181": "Uttering forged writings",
+            "18.2-186": "False statements to obtain property or credit",
+            "18.2-186.3": "Identity theft",
+            "18.2-200": "Credit card fraud",
+            "18.2-200.1": "Credit card theft"
+        },
+        "financial_fraud": {
+            "18.2-195": "Embezzlement",
+            "18.2-196": "False pretenses",
+            "6.2-604": "Check fraud"
+        }
+    },
+    "19.2-243": {
+        "title": "Speedy Trial Rights",
+        "dismissal_procedures": {
+            "19.2-191": "Dismissal for failure to prosecute",
+            "19.2-191.1": "Dismissal for failure to bring to trial"
+        },
+        "continuances": {
+            "19.2-231": "Continuances generally",
+            "19.2-232": "Continuances in felony cases"
+        },
+        "related_rights": {
+            "19.2-159": "Right to counsel",
+            "19.2-163": "Appointment of counsel",
+            "19.2-165": "Compensation for appointed counsel"
+        }
+    },
+    "19.2-120": {
+        "title": "Admission to Bail",
+        "bail_procedures": {
+            "19.2-123": "Release on secured or unsecured bond",
+            "19.2-124": "Conditions of release",
+            "19.2-125": "Bail in felony cases"
+        },
+        "pretrial_release": {
+            "19.2-152": "Recognizance",
+            "19.2-152.1": "Citation in lieu of arrest",
+            "19.2-152.2": "Pretrial services programs"
+        },
+        "forfeiture": {
+            "19.2-128": "Bail forfeiture",
+            "19.2-129": "Remission of bail forfeiture"
+        }
+    },
+    "19.2-54": {
+        "title": "Miranda Warnings",
+        "custodial_interrogation": {
+            "19.2-54.1": "Electronic recording of custodial interrogations",
+            "19.2-54.2": "Exceptions to electronic recording"
+        },
+        "rights_advisals": {
+            "19.2-55": "Right to remain silent",
+            "19.2-56": "Right to counsel during interrogation"
+        },
+        "juveniles": {
+            "16.1-357": "Juvenile Miranda warnings"
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

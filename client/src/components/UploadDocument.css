@@ -1,0 +1,141 @@
+.upload-doc-container {
+  padding: 16px;
+}
+.upload-controls {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.upload-btn {
+  padding: 10px 16px;
+  background: rgba(212, 175, 55, 0.12);
+  color: white;
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.upload-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.progress {
+  height: 8px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.progress .bar {
+  height: 8px;
+  background: rgba(212, 175, 55, 0.6);
+  width: 0%;
+  transition: width 0.2s ease;
+}
+.status.ok {
+  color: #7CFC9F;
+}
+.status.err {
+  color: #ff6b6b;
+}
+.selected-files ul {
+  margin: 6px 0 0 16px;
+}
+.hint, .note {
+  opacity: 0.75;
+  font-size: 12px;
+}
+.ocr-notice {
+  margin-top: 8px;
+  padding: 12px;
+  background: rgba(212, 175, 55, 0.15);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 6px;
+  color: rgba(212, 175, 55, 0.9);
+  font-size: 13px;
+}
+
+.doc-stats {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: rgba(212, 175, 55, 0.1);
+  border: 1px solid rgba(212, 175, 55, 0.2);
+  border-radius: 6px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.9);
+}
+.doc-stats strong {
+  color: rgba(212, 175, 55, 0.9);
+}
+.motion-analysis {
+  margin-top: 20px;
+  padding: 16px;
+  background: rgba(212, 175, 55, 0.08);
+  border: 1px solid rgba(212, 175, 55, 0.2);
+  border-radius: 8px;
+}
+.motion-analysis h3 {
+  margin-top: 0;
+  color: rgba(212, 175, 55, 0.9);
+}
+.motion-analysis h4 {
+  margin-top: 16px;
+  margin-bottom: 8px;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 14px;
+}
+.analysis-section {
+  margin-bottom: 16px;
+}
+.probability {
+  font-size: 24px;
+  color: rgba(212, 175, 55, 0.9);
+  margin: 8px 0;
+}
+.probability .outcome {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-top: 4px;
+}
+.outcomes ul {
+  margin: 8px 0 0 20px;
+  padding: 0;
+}
+.outcomes li {
+  margin: 4px 0;
+}
+.risk-level {
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin: 8px 0;
+}
+.risk-high {
+  background: rgba(255, 107, 107, 0.2);
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  color: #ff6b6b;
+}
+.risk-medium {
+  background: rgba(255, 193, 7, 0.2);
+  border: 1px solid rgba(255, 193, 7, 0.4);
+  color: #ffc107;
+}
+.risk-low {
+  background: rgba(124, 252, 159, 0.2);
+  border: 1px solid rgba(124, 252, 159, 0.4);
+  color: #7CFC9F;
+}
+.warnings {
+  margin-top: 8px;
+}
+.warning {
+  padding: 6px 10px;
+  background: rgba(255, 193, 7, 0.15);
+  border-left: 3px solid rgba(255, 193, 7, 0.6);
+  margin: 4px 0;
+  font-size: 13px;
+}
+

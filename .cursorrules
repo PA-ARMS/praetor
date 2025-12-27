@@ -1,0 +1,43 @@
+- The AKLAWMS (Virginia Legal AI) system is a MISSION-CRITICAL application for defense attorneys. It must be the most advanced and accurate legal research system possible. Zero tolerance for errors - attorneys' clients' freedom depends on accurate legal information. Every feature must be flawless before deployment. All legal data must be verified for completeness and accuracy. The system must never hallucinate, fabricate, or misrepresent legal authority. When in doubt, the system must indicate uncertainty rather than provide potentially incorrect information. (ID: 11681865)
+- Complete AWS deployment guide for AKLAWMS system with 4 options:
+
+**RECOMMENDED: Option 2 - EC2 + PM2 (Easiest for current setup)**
+- Works with existing SQLite database (no migration needed)
+- Cost: ~$15-30/month for t3.small/medium
+- Setup time: 30 minutes
+- Stack: Ubuntu 22.04, Node.js 18, PM2, Nginx
+- Deployment steps: 1) Launch EC2 with ports 80,443,22 open, 2) Install nodejs/npm/pm2/nginx, 3) Upload code, 4) Install dependencies (server & build client), 5) Start with PM2 (pm2 start index.js), 6) Configure Nginx reverse proxy (frontend on /, API proxy to localhost:5000)
+
+**Option 1: AWS Elastic Beanstalk** - Simplest (5-10 min setup), auto-scaling, but requires RDS migration from SQLite. Cost: $30-50/month.
+
+**Option 3: Existing Terraform** - Most professional but configured for PostgreSQL Aurora. Need to either migrate DB or modify terraform to use EC2 instead of ECS. Located in infra/terraform/.
+
+**Option 4: AWS Lightsail** - Simplest AWS option, $10-20/month, predictable pricing, good for small-medium deployments.
+
+**Critical files needed:**
+- Environment variables in server/.env (JWT_SECRET, ENCRYPTION_KEY, DB_PATH, PORT=5000)
+- Nginx config: serve client/build for /, proxy /api to localhost:5000
+- PM2 for process management: pm2 start/save/startup
+
+**Project structure:** React frontend (client/), Express backend (server/), SQLite database, already has Terraform infra but needs adjustment for SQLite vs PostgreSQL. (ID: 10871830)
+- The user prefers not to include code snippets during brainstorming discussions, such as when designing AKLAWMS. (ID: 8572809)
+- The user prefers that the AI responses appear as typed in real time rather than showing up all at once. (ID: 8572806)
+- The user prefers not to allow end users to change voice or voice settings once a good voice is chosen; the voice should have its own personality and not be robotic. (ID: 6827386)
+- The user wants the AI system to be locally based and not use any API keys. (ID: 6827380)
+- The user prefers not to make any code changes until the system is confirmed to be running. (ID: 6505661)
+- The user prefers that the assistant present information in an easy-to-read format rather than as one giant sentence. (ID: 6505643)
+- The user has granted the assistant full permissions to make necessary code changes and system modifications to ensure the system's success. (ID: 99999999)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
