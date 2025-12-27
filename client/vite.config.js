@@ -10,6 +10,8 @@ export default defineConfig({
     hmr: {
       host: 'localhost'
     },
+    // Proxy only used in development when VITE_API_URL is not set
+    // In production builds, VITE_API_URL must be set to point to backend
     proxy: {
       '/api': {
         target: 'http://localhost:5000',
@@ -24,7 +26,10 @@ export default defineConfig({
         main: './index.html',
         learningDashboard: './learning-dashboard.html'
       }
-    }
+    },
+    // Production build configuration
+    // Note: VITE_API_URL must be set in .env.production for AWS deployment
+    // The proxy is NOT used in production builds - all API calls use VITE_API_URL
   }
 })
 

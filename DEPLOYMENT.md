@@ -1,5 +1,17 @@
 # Deployment Guide - Virginia Legal AI
 
+## Deployment Architectures
+
+This system supports two deployment architectures:
+
+1. **Local Deployment** (both frontend and backend on same machine/network)
+   - See "Network Configuration for LAN Access" below
+
+2. **Split Deployment** (frontend on AWS, backend at local facility)
+   - See [Frontend/Backend Split Guide](docs/FRONTEND_BACKEND_SPLIT.md)
+   - [AWS Frontend Deployment](docs/AWS_FRONTEND_DEPLOYMENT.md)
+   - [Backend Configuration for Remote Frontend](docs/BACKEND_REMOTE_FRONTEND.md)
+
 ## Network Configuration for LAN Access
 
 This system runs on a single PC and serves attorneys over the local network.
