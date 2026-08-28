@@ -971,11 +971,19 @@
   backdrop-filter: blur(20px);
 }
 
+.chat-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 1.25rem;
+  padding: 0 1.5rem 1rem;
+}
+
 .live-lookup-toggle {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 1.5rem 1rem;
+  padding: 0;
   font-size: 12px;
   color: rgba(255, 255, 255, 0.7);
   cursor: pointer;

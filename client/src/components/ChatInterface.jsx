@@ -6,6 +6,13 @@ import ScenarioPredictionPanel from './ScenarioPredictionPanel'
 import LegalResponseFormatter from './LegalResponseFormatter'
 import ExpandableSources from './ExpandableSources'
 import './ChatInterface.css'
+import {
+  VOICE_CHANGE_EVENT,
+  getVoiceEnabled,
+  setVoiceEnabled,
+  speakResponse,
+  stopSpeaking,
+} from '../utils/praetorVoice.js'
 
 // Use relative URL so Vite proxy handles it (works for both local and network access)
 const API_BASE = import.meta.env.VITE_API_URL || ''
@@ -23,7 +30,9 @@ function ChatInterface() {
   const [showDetailSelector, setShowDetailSelector] = useState(false)
   const [exhaustiveMode, setExhaustiveMode] = useState(false)
   const [useWeb, setUseWeb] = useState(true)
+  const [voiceOn, setVoiceOn] = useState(() => getVoiceEnabled())
   const [summaryCounts, setSummaryCounts] = useState({})
+  const lastSpokenIdRef = useRef(null)
   const messagesEndRef = useRef(null)
   const messagesContainerRef = useRef(null)
   const userHasScrolledUpRef = useRef(false)
@@ -89,6 +98,28 @@ function ChatInterface() {
 
   const [conversationId, setConversationId] = useState(null)
 
+  useEffect(() => {
+    const sync = (e) => {
+      const on = e?.detail?.on
+      setVoiceOn(typeof on === 'boolean' ? on : getVoiceEnabled())
+    }
+    window.addEventListener(VOICE_CHANGE_EVENT, sync)
+    return () => window.removeEventListener(VOICE_CHANGE_EVENT, sync)
+  }, [])
+
+  useEffect(() => {
+    if (!voiceOn) {
+      stopSpeaking()
+      return
+    }
+    const last = messages[messages.length - 1]
+    if (!last || last.role !== 'assistant' || last.error) return
+    const speakKey = last.messageId || last.content
+    if (lastSpokenIdRef.current === speakKey) return
+    lastSpokenIdRef.current = speakKey
+    speakResponse(last.content)
+  }, [messages, voiceOn])
+
   const handleSubmit = async (e) => {
     e.preventDefault()
     if (!input.trim() || loading) return
@@ -100,6 +131,7 @@ function ChatInterface() {
     setInput('')
     setLoading(true)
     setSources([])
+    stopSpeaking()
 
     try {
       // If files selected, upload them first so they become searchable
@@ -461,15 +493,30 @@ function ChatInterface() {
           Send
         </button>
       </form>
-      <label className="live-lookup-toggle" title="Fetch current official statute pages from law.lis.virginia.gov">
-        <input
-          type="checkbox"
-          checked={useWeb}
-          onChange={(e) => setUseWeb(e.target.checked)}
-          disabled={loading}
-        />
-        Live official lookup (LIS)
-      </label>
+      <div className="chat-toggles">
+        <label className="live-lookup-toggle" title="Fetch current official statute pages from law.lis.virginia.gov">
+          <input
+            type="checkbox"
+            checked={useWeb}
+            onChange={(e) => setUseWeb(e.target.checked)}
+            disabled={loading}
+          />
+          Live official lookup (LIS)
+        </label>
+        <label className="live-lookup-toggle" title="Speak replies aloud. Voice is fixed (Cortana-style if available, otherwise a British butler).">
+          <input
+            type="checkbox"
+            checked={voiceOn}
+            onChange={(e) => {
+              const on = e.target.checked
+              setVoiceOn(on)
+              setVoiceEnabled(on)
+              if (!on) stopSpeaking()
+            }}
+          />
+          Speak replies
+        </label>
+      </div>
       </div>
       <ScenarioPredictionPanel 
         prediction={latestPrediction}
