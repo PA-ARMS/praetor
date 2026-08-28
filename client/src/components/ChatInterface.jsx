@@ -22,6 +22,7 @@ function ChatInterface() {
   const [recommendedLevel, setRecommendedLevel] = useState(null)
   const [showDetailSelector, setShowDetailSelector] = useState(false)
   const [exhaustiveMode, setExhaustiveMode] = useState(false)
+  const [useWeb, setUseWeb] = useState(true)
   const [summaryCounts, setSummaryCounts] = useState({})
   const messagesEndRef = useRef(null)
   const messagesContainerRef = useRef(null)
@@ -123,6 +124,7 @@ function ChatInterface() {
         message: currentInput,
         conversation_id: conversationId,
         use_rag: true,
+        use_web: useWeb,
         max_results: exhaustiveMode ? 0 : 25,  // Limit to 25 results for speed (0 = all for exhaustive mode)
         detail_level: detailLevel,  // null for auto-detect
         exhaustive_search: exhaustiveMode
@@ -303,7 +305,7 @@ function ChatInterface() {
             <h2>P.R.A.E.T.O.R. System Online.</h2>
             <p>Awaiting tactical legal parameters.</p>
             <p className="disclaimer">
-              <strong>Protocol:</strong> All responses follow C.R.A.C. format. Verify citations (e.g., § 18.2-57.2).
+              <strong>Protocol:</strong> All responses follow C.R.A.C. format. Verify citations (e.g., § 18.2-57.2). Live official lookup pulls current Code text from law.lis.virginia.gov — not the open internet.
             </p>
           </div>
         )}
@@ -459,6 +461,15 @@ function ChatInterface() {
           Send
         </button>
       </form>
+      <label className="live-lookup-toggle" title="Fetch current official statute pages from law.lis.virginia.gov">
+        <input
+          type="checkbox"
+          checked={useWeb}
+          onChange={(e) => setUseWeb(e.target.checked)}
+          disabled={loading}
+        />
+        Live official lookup (LIS)
+      </label>
       </div>
       <ScenarioPredictionPanel 
         prediction={latestPrediction}

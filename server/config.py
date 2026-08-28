@@ -117,7 +117,7 @@ class Settings(BaseSettings):
         """Strip whitespace from boolean environment variables before parsing"""
         if isinstance(data, dict):
             # List of boolean field names
-            boolean_fields = ['SCENARIO_DB_ENABLED', 'TTS_ENABLED', 'DEBUG', 'RATE_LIMIT_ENABLED', 'REQUIRE_PASSWORD_COMPLEXITY']
+            boolean_fields = ['SCENARIO_DB_ENABLED', 'TTS_ENABLED', 'DEBUG', 'RATE_LIMIT_ENABLED', 'REQUIRE_PASSWORD_COMPLEXITY', 'LIVE_LEGAL_LOOKUP_ENABLED']
             for field in boolean_fields:
                 if field in data and isinstance(data[field], str):
                     data[field] = data[field].strip()
@@ -172,6 +172,10 @@ class Settings(BaseSettings):
     # API Keys (optional, used by download scripts)
     COURTLISTENER_API_KEY: str = ""  # CourtListener API key for downloading cases
     CAP_API_KEY: str = ""  # CAP (Caselaw Access Project) API key
+
+    # Live official-source lookup during chat (no API keys). Allowlisted .gov pages only.
+    LIVE_LEGAL_LOOKUP_ENABLED: bool = True
+    LIVE_LEGAL_LOOKUP_TIMEOUT_SECONDS: float = 8.0
     
     class Config:
         env_file = ".env"

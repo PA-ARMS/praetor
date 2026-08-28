@@ -14,6 +14,8 @@ from server.services.ollama_service import ollama_service
 from server.services.rag_service import rag_service
 from server.services.guardrails_service import guardrails_service
 from server.services.scotus_service import scotus_service
+from server.services.live_legal_lookup_service import live_legal_lookup_service
+from server.config import settings
 import re
 
 
@@ -95,6 +97,40 @@ def _load_source_catalog() -> Dict[str, dict]:
         return _SOURCE_CATALOG_CACHE
 
 
+def _want_live_lookup(request: "ChatRequest") -> bool:
+    if getattr(request, "use_web", None) is False:
+        return False
+    if getattr(request, "use_web", None) is True:
+        return bool(getattr(settings, "LIVE_LEGAL_LOOKUP_ENABLED", True))
+    return bool(getattr(settings, "LIVE_LEGAL_LOOKUP_ENABLED", True))
+
+
+async def _merge_live_official_sources(query: str, sources_raw: List[Dict], warnings: List[str]) -> int:
+    """Fetch allowlisted official pages and prepend them to retrieved sources."""
+    try:
+        live_hits = await live_legal_lookup_service.lookup(query)
+    except Exception as e:
+        warnings.append(f"Live official lookup failed: {e}")
+        return 0
+    if not live_hits:
+        return 0
+    existing = {s.get("id") for s in sources_raw}
+    added = 0
+    for hit in reversed(live_hits):
+        sid = hit.get("id")
+        if sid in existing:
+            continue
+        sources_raw.insert(0, hit)
+        existing.add(sid)
+        added += 1
+    if added:
+        warnings.append(
+            f"Included {added} live official page(s) from law.lis.virginia.gov / allowlisted government sites. "
+            "Verify effective dates independently before filing."
+        )
+    return added
+
+
 class ChatRequest(BaseModel):
     message: str
     conversation_id: Optional[str] = None
@@ -105,6 +141,7 @@ class ChatRequest(BaseModel):
     detail_level: Optional[str] = None  # "summary", "standard", "comprehensive", "complete", "unlimited", or None for auto
     exhaustive_search: bool = False  # Enable exhaustive trial prep mode (500+ sources)
     max_output_tokens: Optional[int] = None  # Override token limit
+    use_web: Optional[bool] = None  # Live official-source lookup; None = use server default
     
     @field_validator('message')
     def validate_message(cls, v):
@@ -448,6 +485,8 @@ async def chat_query(
                     all_sources.append(state_source)
             
             sources = all_sources  # Replace with combined, properly ordered sources
+            if _want_live_lookup(request):
+                await _merge_live_official_sources(request.message, sources, warnings)
 
             # Capture verification summary for UI (from search_result)
             verification_status = search_result.get("verification_status", "unverified")

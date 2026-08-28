@@ -42,19 +42,21 @@ function ExpandableSources({ sources, messageId, summaryCounts }) {
       <ul>
         {displaySources.map((source, i) => (
           <li key={i}>
-            {source.link ? (
+            {(source.link || source.url) ? (
               <a
-                href={source.link}
+                href={source.link || source.url}
                 target="_blank"
                 rel="noreferrer"
               >
                 {source.source} ({source.jurisdiction})
                 {source.citation ? ` – ${source.citation}` : ''}
+                {source.live_fetch ? ' [live official]' : ''}
               </a>
             ) : (
               <>
                 {source.source} ({source.jurisdiction})
                 {source.citation ? ` – ${source.citation}` : ''}
+                {source.live_fetch ? ' [live official]' : ''}
               </>
             )}
           </li>
