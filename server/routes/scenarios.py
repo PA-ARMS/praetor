@@ -18,7 +18,7 @@ def require_localhost(request: Request):
     
     This check is lenient to allow requests through Vite proxy and from same machine:
     - Direct localhost connections
-    - Requests through Vite proxy (which forwards to localhost:5000)
+    - Requests through Vite proxy (which forwards to localhost:5001)
     - Requests from same machine via network interface (private IPs)
     - Requests with localhost in Origin/Referer headers
     """
@@ -178,15 +178,31 @@ async def get_stats(request: Request):
         # Get outcome distribution
         try:
             scenario_service._ensure_initialized()
-            collection_data = scenario_service.collection.get() if scenario_service.collection else None
-            if collection_data:
-                outcomes = {}
-                for meta in collection_data.get('metadatas', []):
-                    outcome = meta.get('outcome', 'Unknown')
-                    if outcome and outcome != 'Unknown':
-                        outcomes[outcome] = outcomes.get(outcome, 0) + 1
-                
-                stats['outcome_distribution'] = outcomes
+            outcomes = {}
+            if scenario_service.collection:
+                batch_size = 400
+                offset = 0
+                while True:
+                    batch = scenario_service.collection.get(
+                        limit=batch_size,
+                        offset=offset,
+                        include=["metadatas"],
+                    )
+                    metas = batch.get("metadatas") or []
+                    if not metas:
+                        break
+                    for meta in metas:
+                        if not meta:
+                            continue
+                        outcome = meta.get("outcome", "Unknown")
+                        if outcome and outcome != "Unknown":
+                            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+                    offset += len(metas)
+                    if len(metas) < batch_size:
+                        break
+                stats["outcome_distribution"] = outcomes
+            else:
+                stats["outcome_distribution"] = {}
         except Exception as e:
             logger.warning(f"Error getting outcome distribution: {e}")
             stats['outcome_distribution'] = {}

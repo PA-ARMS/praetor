@@ -17,8 +17,9 @@ CATALOG_PATH = Path("config/source_catalog.json")
 MANIFEST_ROOT = Path("data/manifests")
 
 # Safety caps (can be overridden by env)
-MAX_PER_SOURCE = int(os.environ.get("MAX_INGEST_PER_SOURCE", "200"))
-MAX_TOTAL = int(os.environ.get("MAX_INGEST_TOTAL", "2000"))
+# Raised for full legal coverage: statutes, regulations, case law across all types
+MAX_PER_SOURCE = int(os.environ.get("MAX_INGEST_PER_SOURCE", "5000"))
+MAX_TOTAL = int(os.environ.get("MAX_INGEST_TOTAL", "50000"))
 
 
 def load_catalog() -> Dict[str, dict]:

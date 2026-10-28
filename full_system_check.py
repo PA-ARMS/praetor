@@ -3,6 +3,13 @@ Full System Check - Comprehensive verification of all system components
 """
 import sys
 import asyncio
+
+# Fix Windows console encoding for Unicode symbols (checkmark, etc.)
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):
+        pass
 import httpx
 from pathlib import Path
 sys.path.insert(0, 'C:\\LAWFIRMAI')
@@ -19,7 +26,7 @@ async def check_backend_api():
     
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get("http://localhost:5000/health")
+            response = await client.get("http://localhost:5001/health")
             if response.status_code == 200:
                 data = response.json()
                 print(f"✅ Backend API: RUNNING")

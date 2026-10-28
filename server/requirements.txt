@@ -20,9 +20,7 @@ pypdf==3.17.4
 passlib[bcrypt]==1.7.4
 python-jose[cryptography]==3.3.0
 bcrypt==4.1.2
-coqui-tts==0.27.2
 torch>=2.0.0
-pyttsx3==2.90
 numpy<2.0
 requests==2.32.3
 beautifulsoup4==4.12.3
@@ -33,4 +31,11 @@ openpyxl==3.1.5
 pandas==2.2.2
 psutil==5.9.8
 pytest==7.4.4
+pystray==0.19.5
 
+# Document pipeline (parallel models)
+unstructured[pdf]>=0.10.0
+easyocr>=1.7.0
+transformers>=4.35.0
+spacy>=3.7.0
+tabula-py>=2.9.0

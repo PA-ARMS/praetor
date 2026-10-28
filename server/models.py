@@ -45,6 +45,31 @@ class User(Base):
         return f"<User(username={self.username}, role={self.role})>"
 
 
+class SemanticResponseCache(Base):
+    """
+    Semantic cache for chat: embedding of the (enhanced) query, scoped by RAG/detail settings.
+    Speeds up repeated or similar questions via cosine similarity (see semantic_cache_service).
+    """
+    __tablename__ = "semantic_response_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    scope_fingerprint = Column(String(64), nullable=False, index=True)
+    ollama_model = Column(String(128), nullable=False, index=True)
+    query_preview = Column(String(2000), nullable=True)
+    embedding_json = Column(Text, nullable=False)
+    response_text = Column(Text, nullable=False)
+    sources_display_json = Column(Text, nullable=True)
+    full_sources_json = Column(Text, nullable=True)
+    warnings_json = Column(Text, nullable=True)
+    extra_json = Column(Text, nullable=True)
+    hit_count = Column(Integer, nullable=False, default=0)
+    last_hit_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User")
+
+
 class ChatMessage(Base):
     """Chat message model"""
     __tablename__ = "chat_messages"
@@ -81,6 +106,20 @@ class AuditLog(Base):
     user_agent = Column(String(255), nullable=True)
     details = Column(Text, nullable=True)  # small JSON snippet or context
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+    user = relationship("User")
+
+
+class PasswordResetToken(Base):
+    """Token for forgot-password flow (no email required; token shown to user or admin)."""
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    token = Column(String(64), unique=True, nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User")
 
@@ -242,6 +281,9 @@ class UserCorrection(Base):
     correction_details = Column(Text, nullable=True)  # Detailed explanation of the correction
     is_attorney_correction = Column(Boolean, default=False, index=True)  # True if corrected by attorney/attorney_partner
     
+    # Assignment for partner review (when regular user submits - routes to Peyton or Yulia)
+    assigned_reviewer_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    
     # Verification status
     verification_status = Column(String(20), nullable=False, default="pending", index=True)  # "pending", "verified", "rejected", "needs_review"
     verified_by_rag = Column(Boolean, default=False)  # Whether RAG system verified this correction
@@ -262,6 +304,7 @@ class UserCorrection(Base):
     # Relationships
     chat_message = relationship("ChatMessage", backref="corrections")
     user = relationship("User", foreign_keys=[user_id])
+    assigned_reviewer = relationship("User", foreign_keys=[assigned_reviewer_id])
     verifying_attorney = relationship("User", foreign_keys=[verifying_attorney_id])
     
     def __repr__(self):
@@ -350,6 +393,79 @@ class ResponseReview(Base):
         return f"<ResponseReview(id={self.id}, chat_message_id={self.chat_message_id}, status={self.review_status})>"
 
 
+class Matter(Base):
+    """
+    Matter (case) - industry-standard matter-centric organization.
+    ABA/law firm practice: matter number, client, jurisdiction, status.
+    """
+    __tablename__ = "matters"
+
+    id = Column(Integer, primary_key=True, index=True)
+    matter_number = Column(String(64), unique=True, index=True, nullable=False)  # e.g. 2024-001
+    display_name = Column(String(255), nullable=False)  # Short description
+    client_name = Column(String(255), nullable=True, index=True)
+    jurisdiction = Column(String(100), nullable=True, index=True)  # Virginia, Federal, etc.
+    status = Column(String(32), nullable=False, default="open", index=True)  # open, closed, pending
+    party_names = Column(Text, nullable=True)  # JSON array or comma-separated for conflict check
+    notes = Column(Text, nullable=True)
+    opened_at = Column(DateTime, default=datetime.utcnow, index=True)
+    closed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    time_entries = relationship("TimeEntry", back_populates="matter", cascade="all, delete-orphan")
+    docket_entries = relationship("DocketEntry", back_populates="matter", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<Matter(matter_number={self.matter_number}, status={self.status})>"
+
+
+class TimeEntry(Base):
+    """
+    Time entry - matter-based time tracking (industry standard: Tabs3, Clio, etc.).
+    """
+    __tablename__ = "time_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    matter_id = Column(Integer, ForeignKey("matters.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    entry_date = Column(DateTime, nullable=False, index=True)
+    duration_minutes = Column(Integer, nullable=False)
+    activity_type = Column(String(64), nullable=False, index=True)  # research, drafting, review, hearing, etc.
+    description = Column(Text, nullable=True)
+    billable = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    matter = relationship("Matter", back_populates="time_entries")
+    user = relationship("User")
+
+    def __repr__(self):
+        return f"<TimeEntry(matter_id={self.matter_id}, {self.duration_minutes}m, {self.activity_type})>"
+
+
+class DocketEntry(Base):
+    """
+    Docket/calendar - matter deadlines (filing, hearing, SOL, etc.).
+    """
+    __tablename__ = "docket_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    matter_id = Column(Integer, ForeignKey("matters.id"), nullable=False, index=True)
+    deadline_type = Column(String(64), nullable=False, index=True)  # filing, hearing, statute_of_limitations, other
+    due_date = Column(DateTime, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    reminder_days = Column(Integer, nullable=True)  # days before due to remind
+    completed = Column(Boolean, default=False, index=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    matter = relationship("Matter", back_populates="docket_entries")
+
+    def __repr__(self):
+        return f"<DocketEntry(matter_id={self.matter_id}, {self.deadline_type}, {self.due_date})>"
+
+
 # Database setup
 connect_args = {}
 db_url = settings.DATABASE_URL
@@ -381,6 +497,7 @@ def init_db():
     ensure_column("prediction_validations", "predicted_reasoning", "TEXT")
     ensure_column("chat_messages", "subject", "VARCHAR(200)")
     ensure_column("chat_messages", "full_sources", "TEXT")  # Complete source data for expansion
+    ensure_column("user_corrections", "assigned_reviewer_id", "INTEGER")
 
 
 def get_db():

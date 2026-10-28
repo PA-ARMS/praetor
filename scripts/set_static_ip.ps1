@@ -1,130 +1,81 @@
-# Set Static IP Address for Virginia Legal AI Server
-# Run as Administrator
+#Requires -RunAsAdministrator
+<#
+.SYNOPSIS
+    Sets a static IP address on the primary network adapter so the PC keeps the same IP on the local network.
+.DESCRIPTION
+    Configures the active network adapter (Wi-Fi or Ethernet) with a static IP.
+    Uses current IP, gateway, and DNS - run once to "lock in" your current configuration.
+    Requires Administrator privileges.
+.EXAMPLE
+    .\scripts\set_static_ip.ps1
+    .\scripts\set_static_ip.ps1 -StaticIP 192.168.1.53
+#>
+param(
+    [string]$StaticIP = "",
+    [string]$Gateway = "192.168.1.1",
+    [string]$PrefixLength = "24",  # 24 = 255.255.255.0
+    [string[]]$DnsServers = @("192.168.1.1", "8.8.8.8")
+)
 
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Virginia Legal AI - Static IP Setup" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
+$ErrorActionPreference = "Stop"
 
-# Check for admin rights
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Write-Host "ERROR: This script must be run as Administrator!" -ForegroundColor Red
-    Write-Host "Right-click PowerShell and select 'Run as administrator'" -ForegroundColor Yellow
-    pause
+# Find the active adapter (the one with a default gateway)
+$adapter = Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway -ne $null } | Select-Object -First 1
+if (-not $adapter) {
+    Write-Host "ERROR: No active network adapter with default gateway found." -ForegroundColor Red
     exit 1
 }
 
-# Get WiFi network adapter (prefer WiFi over Ethernet)
-# WiFi adapters have MediaType = 9 (IEEE 802.11) or contain "Wireless" or "Wi-Fi" in name/description
-$wifiAdapter = Get-NetAdapter | Where-Object {
-    $_.Status -eq "Up" -and (
-        $_.MediaType -eq 9 -or 
-        $_.Name -like "*Wi-Fi*" -or 
-        $_.Name -like "*Wireless*" -or
-        $_.InterfaceDescription -like "*Wireless*" -or
-        $_.InterfaceDescription -like "*Wi-Fi*" -or
-        $_.InterfaceDescription -like "*802.11*"
-    )
-} | Select-Object -First 1
+$interfaceAlias = $adapter.InterfaceAlias
+$currentIP = ($adapter.IPv4Address.IPAddress) | Select-Object -First 1
 
-# If no WiFi adapter found, try any active adapter as fallback
-if (-not $wifiAdapter) {
-    Write-Host "WARNING: No active WiFi adapter found!" -ForegroundColor Yellow
-    Write-Host "Attempting to use any active network adapter..." -ForegroundColor Yellow
-    Write-Host ""
-    $wifiAdapter = Get-NetAdapter | Where-Object {$_.Status -eq "Up"} | Select-Object -First 1
+if ([string]::IsNullOrWhiteSpace($StaticIP)) {
+    $StaticIP = $currentIP
+    Write-Host "Using current IP: $StaticIP" -ForegroundColor Cyan
 }
 
-if (-not $wifiAdapter) {
-    Write-Host "ERROR: No active network adapter found!" -ForegroundColor Red
-    pause
-    exit 1
+# Get current gateway if not specified
+$currentGateway = ($adapter.IPv4DefaultGateway.NextHop) | Select-Object -First 1
+if ($Gateway -eq "192.168.1.1" -and $currentGateway) {
+    $Gateway = $currentGateway
 }
-
-# Check if the selected adapter is actually WiFi
-$isWiFi = ($wifiAdapter.MediaType -eq 9 -or 
-           $wifiAdapter.Name -like "*Wi-Fi*" -or 
-           $wifiAdapter.Name -like "*Wireless*" -or
-           $wifiAdapter.InterfaceDescription -like "*Wireless*" -or
-           $wifiAdapter.InterfaceDescription -like "*Wi-Fi*" -or
-           $wifiAdapter.InterfaceDescription -like "*802.11*")
-
-if ($isWiFi) {
-    Write-Host "WiFi Network Adapter Selected: $($wifiAdapter.Name)" -ForegroundColor Green
-    Write-Host "Interface: $($wifiAdapter.InterfaceDescription)" -ForegroundColor Cyan
-} else {
-    Write-Host "Network Adapter Selected: $($wifiAdapter.Name)" -ForegroundColor Yellow
-    Write-Host "Interface: $($wifiAdapter.InterfaceDescription)" -ForegroundColor Yellow
-    Write-Host "(Note: This is not a WiFi adapter)" -ForegroundColor Yellow
-}
-Write-Host ""
-
-# Get current IP configuration
-$currentIP = Get-NetIPAddress -InterfaceIndex $wifiAdapter.InterfaceIndex -AddressFamily IPv4 | Where-Object {$_.IPAddress -like "192.168.*"}
-if ($currentIP) {
-    Write-Host "Current IP: $($currentIP.IPAddress)" -ForegroundColor Yellow
-    Write-Host "Current Gateway: $((Get-NetRoute -InterfaceIndex $wifiAdapter.InterfaceIndex -DestinationPrefix "0.0.0.0/0").NextHop)" -ForegroundColor Yellow
-    Write-Host ""
-}
-
-# Get input
-Write-Host "Enter static IP configuration:" -ForegroundColor Cyan
-$staticIP = Read-Host "IP Address (e.g., 192.168.1.100)"
-$subnetMask = Read-Host "Subnet Mask (default: 255.255.255.0)"
-if ([string]::IsNullOrEmpty($subnetMask)) { $subnetMask = "255.255.255.0" }
-
-$gateway = Read-Host "Gateway (default: 192.168.1.1)"
-if ([string]::IsNullOrEmpty($gateway)) { $gateway = "192.168.1.1" }
-
-$dns1 = Read-Host "DNS Server 1 (default: 192.168.1.1)"
-if ([string]::IsNullOrEmpty($dns1)) { $dns1 = "192.168.1.1" }
 
 Write-Host ""
-Write-Host "Configuration:" -ForegroundColor Cyan
-Write-Host "  IP: $staticIP" -ForegroundColor White
-Write-Host "  Subnet: $subnetMask" -ForegroundColor White
-Write-Host "  Gateway: $gateway" -ForegroundColor White
-Write-Host "  DNS: $dns1" -ForegroundColor White
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host "  Static IP Configuration" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Yellow
+Write-Host "  Adapter:    $interfaceAlias"
+Write-Host "  Static IP:  $StaticIP"
+Write-Host "  Gateway:    $Gateway"
+Write-Host "  Subnet:     /$PrefixLength (255.255.255.0)"
+Write-Host "  DNS:       $($DnsServers -join ', ')"
+Write-Host "========================================" -ForegroundColor Yellow
 Write-Host ""
 
-$confirm = Read-Host "Apply this configuration? (Y/N)"
-if ($confirm -ne "Y" -and $confirm -ne "y") {
-    Write-Host "Cancelled." -ForegroundColor Yellow
+$confirm = Read-Host "Apply this configuration? (y/n)"
+if ($confirm -ne 'y' -and $confirm -ne 'Y') {
+    Write-Host "Cancelled." -ForegroundColor Gray
     exit 0
 }
 
 try {
-    # Remove existing IP configuration
-    Remove-NetIPAddress -InterfaceIndex $wifiAdapter.InterfaceIndex -Confirm:$false -ErrorAction SilentlyContinue
+    # Remove existing IP configuration (switches from DHCP to manual)
+    Remove-NetIPAddress -InterfaceAlias $interfaceAlias -Confirm:$false -ErrorAction SilentlyContinue
     
     # Set static IP
-    New-NetIPAddress -InterfaceIndex $wifiAdapter.InterfaceIndex -IPAddress $staticIP -PrefixLength 24 -DefaultGateway $gateway
+    New-NetIPAddress -InterfaceAlias $interfaceAlias -IPAddress $StaticIP -PrefixLength $PrefixLength -DefaultGateway $Gateway
     
-    # Set DNS
-    Set-DnsClientServerAddress -InterfaceIndex $wifiAdapter.InterfaceIndex -ServerAddresses $dns1
+    # Set DNS servers
+    Set-DnsClientServerAddress -InterfaceAlias $interfaceAlias -ServerAddresses $DnsServers
     
     Write-Host ""
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host "  Static IP Configured Successfully!" -ForegroundColor Green
-    Write-Host "========================================" -ForegroundColor Green
+    Write-Host "SUCCESS: Static IP configured." -ForegroundColor Green
+    Write-Host "  Your PC will now use $StaticIP on the network." -ForegroundColor Green
     Write-Host ""
-    Write-Host "New IP Address: $staticIP" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "Update your network access URL to:" -ForegroundColor Yellow
-    Write-Host "  http://$staticIP`:3000" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "Or use hostname:" -ForegroundColor Yellow
-    Write-Host "  http://$env:COMPUTERNAME`:3000" -ForegroundColor Green
+    Write-Host "If CORS in .env uses this IP, no changes needed." -ForegroundColor Cyan
+    Write-Host "Access the app at: http://${StaticIP}:3000" -ForegroundColor Cyan
     Write-Host ""
 } catch {
-    Write-Host ""
-    Write-Host "ERROR: Failed to configure static IP" -ForegroundColor Red
-    Write-Host $_.Exception.Message -ForegroundColor Red
-    Write-Host ""
-    Write-Host "You may need to configure this manually in:" -ForegroundColor Yellow
-    Write-Host "  Network Settings > Adapter Properties > TCP/IPv4" -ForegroundColor White
+    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
 }
-
-pause
-

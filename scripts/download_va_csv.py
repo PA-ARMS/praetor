@@ -233,67 +233,85 @@ async def parse_and_index_csv(csv_path: Path, collection_name: str, collection_d
         return count
 
 
-async def main():
-    """Main function"""
-    logger.info("="*80)
-    logger.info("VIRGINIA CODE CSV DOWNLOAD AND INDEXING")
-    logger.info("="*80)
-    
-    # Create download directory
+async def download_all_va_csv(force: bool = False) -> dict:
+    """
+    Download official Code of Virginia CSV exports from law.lis.virginia.gov.
+    Returns stats dict (downloaded, skipped, failed).
+    """
     download_dir = Path("data/va_csv")
     download_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Initialize RAG service
+
+    stats = {"downloaded": 0, "skipped": 0, "failed": 0, "files": []}
+
+    all_files = [(f, fn, d) for f, fn, d in COV_TITLES] + [
+        (n, fn, d) for n, fn, d in OTHER_COLLECTIONS
+    ]
+
+    for _name, filename, _desc in all_files:
+        url = f"{BASE_URL}/CSV/{filename}"
+        output_path = download_dir / filename
+
+        if output_path.exists() and not force:
+            stats["skipped"] += 1
+            continue
+
+        if output_path.exists() and force:
+            output_path.unlink(missing_ok=True)
+
+        success = await download_csv(url, output_path)
+        if success:
+            stats["downloaded"] += 1
+            stats["files"].append(filename)
+        else:
+            stats["failed"] += 1
+
+    return stats
+
+
+async def main():
+    """Download and optionally index (legacy full pipeline)."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Download Virginia Code CSV from LIS")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-download CSV files even if cached locally",
+    )
+    parser.add_argument(
+        "--download-only",
+        action="store_true",
+        help="Download only; do not index into Chroma",
+    )
+    args = parser.parse_args()
+
+    logger.info("=" * 80)
+    logger.info("VIRGINIA CODE CSV DOWNLOAD" + ("" if args.download_only else " AND INDEXING"))
+    logger.info("=" * 80)
+
+    dl = await download_all_va_csv(force=args.force)
+    logger.info(
+        f"Download: {dl['downloaded']} new, {dl['skipped']} cached, {dl['failed']} failed"
+    )
+
+    if args.download_only:
+        return
+
     rag_service._ensure_initialized()
-    
-    total_downloaded = 0
     total_indexed = 0
-    
-    # Download and index Code of Virginia titles
-    logger.info("\n📚 Downloading Code of Virginia Titles...")
+    download_dir = Path("data/va_csv")
+
     for title_name, filename, description in COV_TITLES:
-        url = f"{BASE_URL}/CSV/{filename}"
         output_path = download_dir / filename
-        
-        # Download if not already present
-        if not output_path.exists():
-            success = await download_csv(url, output_path)
-            if success:
-                total_downloaded += 1
-            else:
-                logger.warning(f"Skipping {title_name} due to download error")
-                continue
-        else:
-            logger.info(f"Using cached: {filename}")
-        
-        # Parse and index
-        count = await parse_and_index_csv(output_path, title_name, description)
-        total_indexed += count
-    
-    # Download and index other collections
-    logger.info("\n📜 Downloading Other Collections...")
-    for coll_name, filename, description in OTHER_COLLECTIONS:
-        url = f"{BASE_URL}/CSV/{filename}"
-        output_path = download_dir / filename
-        
-        if not output_path.exists():
-            success = await download_csv(url, output_path)
-            if success:
-                total_downloaded += 1
-        else:
-            logger.info(f"Using cached: {filename}")
-        
         if output_path.exists():
-            count = await parse_and_index_csv(output_path, coll_name, description)
-            total_indexed += count
-    
-    logger.info("\n" + "="*80)
-    logger.info("DOWNLOAD AND INDEXING COMPLETE")
-    logger.info("="*80)
-    logger.info(f"Files downloaded: {total_downloaded}")
+            total_indexed += await parse_and_index_csv(output_path, title_name, description)
+
+    for coll_name, filename, description in OTHER_COLLECTIONS:
+        output_path = download_dir / filename
+        if output_path.exists():
+            total_indexed += await parse_and_index_csv(output_path, coll_name, description)
+
     logger.info(f"Sections indexed: {total_indexed}")
-    logger.info(f"CSV files saved to: {download_dir}")
-    logger.info("="*80)
 
 
 if __name__ == "__main__":

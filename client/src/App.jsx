@@ -1,39 +1,16 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
+import ErrorBoundary from './components/ErrorBoundary'
 import Login from './components/Login'
 import ChatInterface from './components/ChatInterface'
 import ChatHistory from './components/ChatHistory'
 import UploadDocument from './components/UploadDocument'
-import AdminDashboard from './components/AdminDashboard'
-import ScenarioAnalysis from './components/ScenarioAnalysis'
-import ResponseReview from './components/ResponseReview'
 import SettingsMenu from './components/SettingsMenu'
-import axios from 'axios'
 import './App.css'
 
-const API_BASE = import.meta.env.VITE_API_URL || ''
-
 function AppContent() {
-  const { isAuthenticated, loading, user, logout } = useAuth()
+  const { isAuthenticated, loading, user } = useAuth()
   const [activeTab, setActiveTab] = useState('chat')
-  const [scenarioDbEnabled, setScenarioDbEnabled] = useState(false)
-
-  // Check if scenario database is enabled
-  useEffect(() => {
-    const checkScenarioDb = async () => {
-      try {
-        // Try to access scenario stats endpoint - if it exists, feature is enabled
-        await axios.get(`${API_BASE}/api/scenarios/stats`)
-        setScenarioDbEnabled(true)
-      } catch (err) {
-        // Endpoint doesn't exist or feature disabled
-        setScenarioDbEnabled(false)
-      }
-    }
-    if (isAuthenticated) {
-      checkScenarioDb()
-    }
-  }, [isAuthenticated])
 
   if (loading) {
     return (
@@ -86,50 +63,28 @@ function AppContent() {
             Upload Docs
           </button>
         )}
-        {scenarioDbEnabled && (user?.role === 'admin' || user?.role === 'attorney' || user?.role === 'attorney_partner') && (
-          <button
-            className={activeTab === 'scenarios' ? 'active' : ''}
-            onClick={() => setActiveTab('scenarios')}
-          >
-            Scenario Analysis
-          </button>
-        )}
-        {(user?.role === 'admin' || user?.role === 'attorney_partner') && (
-          <button
-            className={activeTab === 'reviews' ? 'active' : ''}
-            onClick={() => setActiveTab('reviews')}
-          >
-            Review Responses
-          </button>
-        )}
-        {(user?.role === 'admin' || user?.role === 'attorney_partner') && (
-          <button
-            className={activeTab === 'admin' ? 'active' : ''}
-            onClick={() => setActiveTab('admin')}
-          >
-            Administration
-          </button>
-        )}
       </div>
       <main>
         {activeTab === 'chat' && <ChatInterface />}
         {activeTab === 'history' && <ChatHistory />}
         {activeTab === 'upload' && <UploadDocument />}
-        {activeTab === 'scenarios' && <ScenarioAnalysis />}
-        {activeTab === 'reviews' && <ResponseReview />}
-        {activeTab === 'admin' && <AdminDashboard />}
       </main>
+      <footer className="App-footer">
+        <span className="App-version">v1.0</span>
+        <a href="/compliance.html" target="_blank" rel="noopener noreferrer" className="App-compliance-link">Privacy &amp; Compliance</a>
+      </footer>
     </div>
   )
 }
 
 function App() {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </ErrorBoundary>
   )
 }
 
 export default App
-

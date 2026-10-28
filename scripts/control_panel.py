@@ -26,7 +26,7 @@ class SystemControlPanel(tk.Tk):
         self.resizable(False, False)
 
         self.project_root = Path(__file__).resolve().parent.parent
-        self.start_script = self.project_root / "START_SYSTEM_SINGLE_WINDOW.bat"
+        self.start_script = self.project_root / "START_SYSTEM.bat"
         self.stop_script = self.project_root / "STOP_SYSTEM.bat"
         self.system_check_script = self.project_root / "scripts" / "system_check.py"
         self.system_check_report = self.project_root / "data" / "system_check_report.json"
@@ -98,7 +98,7 @@ class SystemControlPanel(tk.Tk):
         status_frame = ttk.LabelFrame(main_frame, text="Live Status", padding=10)
         status_frame.pack(fill="x", pady=(10, 0))
 
-        ttk.Label(status_frame, text="Backend (FastAPI / port 5000):").grid(
+        ttk.Label(status_frame, text="Backend (FastAPI / port 5001):").grid(
             row=0, column=0, sticky="w"
         )
         self.backend_status_label = ttk.Label(status_frame, text="Unknown")
@@ -245,7 +245,7 @@ class SystemControlPanel(tk.Tk):
     # Status and logs
     # ------------------------------------------------------------------
     def update_status(self) -> None:
-        backend_ok, backend_detail = self._check_http("http://localhost:5000/health")
+        backend_ok, backend_detail = self._check_http("http://localhost:5001/health")
         frontend_ok, frontend_detail = self._check_http("http://localhost:3000")
 
         self._set_status_label(

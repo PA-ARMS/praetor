@@ -1,0 +1,257 @@
+.matters-dashboard {
+  padding: 1.5rem;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.matters-loading {
+  opacity: 0.8;
+}
+
+.matters-err {
+  color: #f87171;
+  padding: 0.75rem;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.matters-conflict {
+  padding: 1rem;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.matters-conflict ul {
+  margin: 0.5rem 0 0 1.25rem;
+}
+
+.matters-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.matters-header h2 {
+  margin: 0;
+}
+
+.matters-form label {
+  display: block;
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+  font-size: 0.9rem;
+  opacity: 0.9;
+}
+
+.matters-form input[type="text"],
+.matters-form input[type="number"],
+.matters-form input[type="date"],
+.matters-form select,
+.matters-form textarea {
+  width: 100%;
+  max-width: 400px;
+  padding: 0.5rem 0.75rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(212, 175, 55, 0.25);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 0.95rem;
+}
+
+.matters-form textarea {
+  min-height: 60px;
+}
+
+.matters-actions {
+  margin-top: 1.25rem;
+  display: flex;
+  gap: 0.75rem;
+}
+
+.matters-btn {
+  padding: 0.5rem 1rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(212, 175, 55, 0.3);
+  border-radius: 6px;
+  color: #fff;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.matters-btn.primary {
+  background: rgba(212, 175, 55, 0.2);
+  border-color: rgba(212, 175, 55, 0.5);
+  color: rgba(212, 175, 55, 1);
+}
+
+.matters-btn.small {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.matters-back {
+  background: none;
+  border: none;
+  color: rgba(212, 175, 55, 0.9);
+  cursor: pointer;
+  margin-bottom: 1rem;
+  font-size: 0.95rem;
+}
+
+.matter-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  opacity: 0.85;
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+}
+
+.matters-section {
+  margin-top: 1.5rem;
+  padding: 1rem 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.matters-section h3 {
+  margin: 0 0 0.75rem 0;
+  font-size: 1.1rem;
+}
+
+.time-summary {
+  margin-bottom: 0.75rem;
+  font-size: 0.95rem;
+  opacity: 0.9;
+}
+
+.matters-subform {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.matters-subform input,
+.matters-subform select {
+  padding: 0.4rem 0.6rem;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(212, 175, 55, 0.25);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 0.9rem;
+}
+
+.time-list,
+.docket-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.time-list li,
+.docket-list li {
+  padding: 0.4rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 0.9rem;
+}
+
+.docket-list li.completed {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.docket-list li input[type="checkbox"] {
+  margin-right: 0.5rem;
+}
+
+.matters-upcoming {
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  background: rgba(212, 175, 55, 0.08);
+  border: 1px solid rgba(212, 175, 55, 0.2);
+  border-radius: 8px;
+}
+
+.matters-upcoming h3 {
+  margin: 0 0 0.5rem 0;
+  font-size: 1rem;
+}
+
+.matters-upcoming ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.matters-upcoming li {
+  padding: 0.35rem 0;
+  font-size: 0.9rem;
+}
+
+.matters-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.matters-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  margin-bottom: 0.5rem;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.matter-num {
+  font-weight: 600;
+  color: rgba(212, 175, 55, 0.95);
+  min-width: 90px;
+}
+
+.matter-name {
+  flex: 1;
+  min-width: 120px;
+}
+
+.matter-client {
+  opacity: 0.8;
+  font-size: 0.9rem;
+}
+
+.matter-status {
+  font-size: 0.8rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  text-transform: capitalize;
+}
+
+.matter-status.open {
+  background: rgba(34, 197, 94, 0.2);
+  color: #86efac;
+}
+
+.matter-status.closed {
+  background: rgba(107, 114, 128, 0.3);
+  color: #d1d5db;
+}
+
+.matter-status.pending {
+  background: rgba(251, 191, 36, 0.2);
+  color: #fde047;
+}
+
+.matters-empty {
+  opacity: 0.8;
+  padding: 2rem;
+}

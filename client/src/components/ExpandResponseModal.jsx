@@ -3,8 +3,7 @@ import axios from 'axios'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './Modal.css'
-
-const API_BASE = import.meta.env.VITE_API_URL || ''
+import { API_BASE } from '../apiConfig.js'
 
 function ExpandResponseModal({ messageId, originalResponse, onClose }) {
   const [detailLevel, setDetailLevel] = useState('comprehensive')

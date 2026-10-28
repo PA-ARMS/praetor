@@ -78,8 +78,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return "unknown"
     
     async def dispatch(self, request: Request, call_next):
-        # Skip rate limiting for health checks
-        if request.url.path == "/health":
+        # Skip rate limiting for health / liveness checks
+        if request.url.path in ("/health", "/ping", "/api/ping", "/api/health"):
             return await call_next(request)
         
         # Cleanup old entries periodically

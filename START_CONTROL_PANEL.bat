@@ -1,37 +1,9 @@
 @echo off
-title AKLAWMS - System Control Panel
+REM Virginia Legal AI - Control Panel
+REM Launches the desktop control panel for system management.
+
 cd /d "%~dp0"
+set PYTHONPATH=%~dp0
 
-echo ========================================
-echo   AKLAWMS System Control Panel
-echo ========================================
-echo.
-
-REM Launch the desktop control panel (requires Python)
 python scripts\control_panel.py
-
-echo.
-echo Control panel closed.
-pause
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+if errorlevel 1 pause

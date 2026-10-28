@@ -38,22 +38,30 @@ class AnswerVerificationService:
                 "unsupported_citations": []
             }
         
-        # Extract citations from answer
+        # Extract citations from answer (Virginia Code + VAC)
         answer_citations = self._extract_citations(answer)
+        answer_citations.extend(self._extract_vac_citations(answer))
         
-        # Extract citations from sources
+        # Extract citations from sources (Virginia Code + VAC regulations)
         source_citations = set()
         source_texts = []
         for source in sources:
             source_text = source.get('text', '')
             source_texts.append(source_text)
-            # Extract citations from source text
+            # Extract Virginia Code citations from source text
             source_cits = self._extract_citations(source_text)
             source_citations.update(source_cits)
+            # Extract VAC (Virginia Administrative Code) citations
+            vac_cits = self._extract_vac_citations(source_text)
+            source_citations.update(vac_cits)
             # Also check metadata
             meta_cit = source.get('metadata', {}).get('citation')
             if meta_cit:
-                source_citations.add(meta_cit.replace('§', '').strip())
+                meta_str = str(meta_cit).replace('§', '').strip()
+                source_citations.add(meta_str)
+                # Check for VAC in metadata
+                vac_meta = self._extract_vac_citations(meta_str)
+                source_citations.update(vac_meta)
         
         # Check which citations are supported
         supported = []
@@ -61,6 +69,9 @@ class AnswerVerificationService:
         for cit in answer_citations:
             # Normalize citation for comparison
             cit_normalized = cit.replace('§', '').strip()
+            # VAC citations stay as-is (e.g., "18 VAC 120-10-10")
+            if ' VAC ' in cit or ' vac ' in cit.lower():
+                cit_normalized = cit.strip()
             if cit_normalized in source_citations or any(cit_normalized in sc for sc in source_citations):
                 supported.append(cit)
             else:
@@ -115,6 +126,19 @@ class AnswerVerificationService:
         pattern = r'§?\s*(\d+\.\d+-\d+(?:\.\d+)?)'
         matches = re.findall(pattern, text)
         return [f"§ {m}" if not m.startswith("§") else m for m in matches]
+    
+    def _extract_vac_citations(self, text: str) -> List[str]:
+        """Extract Virginia Administrative Code (VAC) citations from text"""
+        # Pattern: 18 VAC 120-10-10 or 18 VAC 120-10
+        pattern = r'(\d+)\s*VAC\s*(\d+)[-.](\d+)(?:[-.](\d+))?'
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        result = []
+        for m in matches:
+            if len(m) == 4 and m[3]:
+                result.append(f"{m[0]} VAC {m[1]}-{m[2]}-{m[3]}")
+            else:
+                result.append(f"{m[0]} VAC {m[1]}-{m[2]}")
+        return result
     
     def _extract_key_claims(self, text: str) -> List[str]:
         """Extract key legal claims from answer"""

@@ -2,42 +2,33 @@
 
 ## 🚀 Before First Production Deployment
 
-### Step 1: Generate Secure Secrets
+### Step 1: Run Production Setup
 
-Run the secret generator:
-```bash
-python scripts/generate_secrets.py
-```
-
-This will output something like:
-```
-JWT_SECRET=your-generated-secret-here
-ENCRYPTION_KEY=your-generated-key-here
-```
-
-### Step 2: Create `.env` File
-
-Create `server/.env` file with:
+Run the production setup script (generates secrets securely, never prints them):
 
 ```bash
-# Security (REQUIRED - use values from generate_secrets.py)
-JWT_SECRET=your-jwt-secret-from-step-1
-ENCRYPTION_KEY=your-encryption-key-from-step-1
-
-# CORS (REQUIRED for production)
-CORS_ORIGINS=["http://localhost:3000","https://your-production-domain.com"]
-
-# Optional: Adjust other settings
-MAX_FILE_SIZE=52428800  # 50MB in bytes
-MIN_PASSWORD_LENGTH=12
-ACCESS_TOKEN_EXPIRE_HOURS=24
+python scripts/production_setup.py
 ```
 
-### Step 3: Verify Configuration
+This updates `.env` with:
+- `JWT_SECRET` and `ENCRYPTION_KEY` (cryptographically generated)
+- `CORS_ORIGINS` (restricted to localhost)
+- `DEBUG=false`
 
-Start the server and check for warnings:
+### Step 2: Add LAN Access (if needed)
+
+For network access, edit `.env` and add your server IP to CORS_ORIGINS:
+
+```env
+CORS_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000","http://192.168.1.100:3000"]
+```
+Replace `192.168.1.100` with your server's static IP.
+
+### Step 3: Restart Backend & Verify
+
+Restart the backend for config changes to take effect, then check for warnings:
 ```bash
-python -m uvicorn server.main:app --host 0.0.0.0 --port 5000
+python -m uvicorn server.main:app --host 0.0.0.0 --port 5001
 ```
 
 **Look for:**
@@ -78,13 +69,13 @@ crontab -e
 
 3. **Test Health Check:**
    ```bash
-   curl http://localhost:5000/health
+   curl http://localhost:5001/health
    ```
    Should return detailed status
 
 4. **Verify Request IDs:**
    ```bash
-   curl -v http://localhost:5000/health
+   curl -v http://localhost:5001/health
    ```
    Check for `X-Request-ID` header in response
 
@@ -138,7 +129,7 @@ Before going to production, verify:
 
 ### Rotate Secrets (Every 90 Days)
 
-1. Generate new secrets: `python scripts/generate_secrets.py`
+1. Run production setup: `python scripts/production_setup.py`
 2. Update `.env` file
 3. Restart server
 4. All users will need to log in again (tokens invalidated)

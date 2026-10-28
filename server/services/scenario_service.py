@@ -8,6 +8,7 @@ from typing import List, Dict, Optional
 from pathlib import Path
 from server.config import settings
 import json
+import uuid
 from server.services.ollama_service import ollama_service
 from server.services.learning_feedback_service import learning_feedback_service
 from server.utils.logger import setup_logger
@@ -74,7 +75,7 @@ class ScenarioService:
             embeddings=[embedding],
             documents=[full_text],
             metadatas=[metadata],
-            ids=[scenario_id] if scenario_id else [f"scenario_{len(self.collection.get()['ids'])}"]
+            ids=[scenario_id] if scenario_id else [f"scenario_{uuid.uuid4().hex}"]
         )
     
     async def find_similar_scenarios(
@@ -89,10 +90,7 @@ class ScenarioService:
         # Check total available scenarios and adjust n_results if needed
         total_available = 0
         try:
-            # Get all IDs to count (more reliable than count() method)
-            collection_data = self.collection.get()
-            all_ids = collection_data.get('ids', [])
-            total_available = len(all_ids) if all_ids else 0
+            total_available = int(self.collection.count())
             
             # If filters are applied, we need to check filtered count
             if filters and total_available > 0:
@@ -455,9 +453,12 @@ class ScenarioService:
     def get_collection_stats(self) -> Dict:
         """Get statistics about the scenario corpus"""
         self._ensure_initialized()
-        collection_data = self.collection.get()
+        try:
+            n = int(self.collection.count())
+        except Exception:
+            n = 0
         return {
-            "total_scenarios": len(collection_data['ids']),
+            "total_scenarios": n,
             "collection_name": "scenario_corpus"
         }
 

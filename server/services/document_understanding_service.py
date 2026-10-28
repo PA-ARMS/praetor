@@ -11,6 +11,50 @@ from server.utils.logger import setup_logger
 
 logger = setup_logger("document_understanding")
 
+_LITIGATION_NAME_KEYS = (
+    "motion",
+    "nonsuit",
+    "dismiss",
+    "exhibit",
+    "complaint",
+    "brief",
+    "response",
+    "opposition",
+    "pleading",
+    "memorandum",
+    "court",
+    "petition",
+    "judgment",
+    "order",
+    "notice",
+)
+
+
+def _filename_suggests_litigation(filename: str) -> bool:
+    if not filename:
+        return False
+    low = filename.lower()
+    return any(k in low for k in _LITIGATION_NAME_KEYS)
+
+
+def _legal_analysis_excerpt(full_text: str, max_total: int = 10000) -> str:
+    """Head + mid + tail so LLM analysis is not dominated by exhibit-only openers."""
+    if len(full_text) <= max_total:
+        return full_text
+    third = max_total // 3
+    head = full_text[:third]
+    mid_start = max(0, len(full_text) // 2 - third // 2)
+    mid = full_text[mid_start : mid_start + third]
+    tail = full_text[-third:]
+    return (
+        head
+        + "\n\n[... document middle omitted for analysis ...]\n\n"
+        + mid
+        + "\n\n[... omitted ...]\n\n"
+        + tail
+        + f"\n\n[Document truncated for analysis — full text has {len(full_text)} characters.]"
+    )
+
 
 class DocumentUnderstandingService:
     """Service for understanding and analyzing uploaded documents"""
@@ -22,36 +66,40 @@ class DocumentUnderstandingService:
         self,
         text: str,
         filename: str,
-        document_type: Optional[str] = None
+        document_type: Optional[str] = None,
+        pre_extracted_summary: Optional[str] = None,
+        pre_extracted_entities: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """
         Analyze and understand a document using AI
-        
-        Returns:
-            Dictionary with:
-            - summary: Brief summary of document
-            - document_type: Detected document type
-            - key_points: List of key points
-            - entities: Extracted entities (parties, dates, etc.)
-            - legal_concepts: Legal concepts mentioned
-            - metadata: Enhanced metadata
+
+        When pre_extracted_summary or pre_extracted_entities are provided (from
+        parallel models like BART/spaCy), they are used instead of LLM/regex.
         """
         try:
-            # Limit text for analysis (first 10000 chars for efficiency)
-            analysis_text = text[:10000]
-            if len(text) > 10000:
-                analysis_text += "\n\n[Document truncated for analysis - full text available in corpus]"
-            
-            # Analyze document
-            analysis = await self._analyze_with_ai(analysis_text, filename, document_type)
-            
-            # Extract entities
-            entities = self._extract_entities(text)
-            
-            # Identify legal concepts
+            # Use pre-extracted summary if available (from BART)
+            if pre_extracted_summary and pre_extracted_summary.strip():
+                summary = pre_extracted_summary.strip()
+                analysis = {"summary": summary, "document_type": document_type or "Unknown", "key_points": []}
+            else:
+                if _filename_suggests_litigation(filename) and len(text) > 12000:
+                    analysis_text = _legal_analysis_excerpt(text, max_total=10000)
+                else:
+                    analysis_text = text[:10000]
+                    if len(text) > 10000:
+                        analysis_text += (
+                            "\n\n[Document truncated for analysis - full text available in corpus]"
+                        )
+                analysis = await self._analyze_with_ai(analysis_text, filename, document_type)
+
+            # Use pre-extracted entities if available (from spaCy)
+            if pre_extracted_entities and isinstance(pre_extracted_entities, dict):
+                entities = self._merge_entities(pre_extracted_entities, self._extract_entities(text))
+            else:
+                entities = self._extract_entities(text)
+
             legal_concepts = self._identify_legal_concepts(text)
-            
-            # Build enhanced metadata
+
             metadata = {
                 "summary": analysis.get("summary", ""),
                 "document_type": analysis.get("document_type", document_type or "Unknown"),
@@ -62,7 +110,6 @@ class DocumentUnderstandingService:
                 "analyzed_at": datetime.now().isoformat(),
                 "has_analysis": True
             }
-            
             return metadata
             
         except Exception as e:
@@ -175,6 +222,16 @@ PARTIES: [Any parties mentioned: Plaintiff, Defendant, etc.]
         
         return result
     
+    def _merge_entities(self, pre_extracted: Dict, regex_entities: Dict) -> Dict[str, List[str]]:
+        """Merge pre-extracted entities (spaCy) with regex fallback. Pre-extracted takes precedence."""
+        result = {}
+        for key in ["dates", "parties", "case_numbers", "statutes", "courts"]:
+            pre = pre_extracted.get(key, [])
+            reg = regex_entities.get(key, [])
+            combined = list(dict.fromkeys((pre or []) + (reg or [])))[:10]
+            result[key] = combined
+        return result
+
     def _extract_entities(self, text: str) -> Dict[str, List[str]]:
         """Extract entities from document text"""
         entities = {

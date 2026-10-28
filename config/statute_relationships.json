@@ -186,6 +186,65 @@
         "juveniles": {
             "16.1-357": "Juvenile Miranda warnings"
         }
+    },
+    "46.2-391": {
+        "title": "DMV License Suspension",
+        "administrative_procedure": {
+            "2.2-4000": "VAPA - Virginia Administrative Process Act",
+            "2.2-4027": "Judicial review of agency decisions"
+        },
+        "related_suspensions": {
+            "46.2-301": "Driving while license suspended",
+            "18.2-270": "DUI license suspension",
+            "18.2-271": "License forfeiture"
+        },
+        "restoration": {
+            "46.2-334.1": "Ignition interlock",
+            "46.2-334.3": "Restricted license"
+        }
+    },
+    "54.1": {
+        "title": "Professions and Occupations",
+        "administrative_boards": {
+            "2.2-4000": "VAPA governs board procedures",
+            "2.2-4027": "Appeal to circuit court"
+        },
+        "licensing": {
+            "54.1-2400": "Board of Medicine",
+            "54.1-3000": "Board of Nursing",
+            "54.1-1100": "Board for Contractors"
+        }
+    },
+    "2.2-4000": {
+        "title": "Virginia Administrative Process Act (VAPA)",
+        "rulemaking": {
+            "2.2-4006": "Agency rulemaking procedures",
+            "2.2-4014": "Public participation"
+        },
+        "adjudication": {
+            "2.2-4020": "Contested cases",
+            "2.2-4024": "Hearing procedures"
+        },
+        "judicial_review": {
+            "2.2-4027": "Appeal to circuit court",
+            "2.2-4030": "Scope of review"
+        }
+    },
+    "8.01-243": {
+        "title": "Statute of Limitations - Contracts",
+        "related_limitations": {
+            "8.01-229": "Personal injury - 2 years",
+            "8.01-249": "Tolling of limitations",
+            "19.2-8": "Criminal limitations"
+        }
+    },
+    "20-91": {
+        "title": "Divorce Grounds",
+        "related_family": {
+            "20-124.1": "Child custody",
+            "20-108.1": "Child support",
+            "20-103": "Cruelty as divorce ground"
+        }
     }
 }
 

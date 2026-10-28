@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 import './Modal.css'
 
-const API_BASE = import.meta.env.VITE_API_URL || ''
+import { API_BASE } from '../apiConfig.js'
 
 function FullSourcesModal({ messageId, onClose }) {
   const [sources, setSources] = useState([])

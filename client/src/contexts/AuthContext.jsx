@@ -1,9 +1,8 @@
 import React, { createContext, useState, useEffect, useContext } from 'react'
 import axios from 'axios'
+import { API_BASE } from '../apiConfig.js'
 
 const AuthContext = createContext()
-
-const API_BASE = import.meta.env.VITE_API_URL || ''
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
@@ -46,7 +45,7 @@ export function AuthProvider({ children }) {
   const login = async (username, password) => {
     try {
       console.log('[AUTH] Attempting login to:', `${API_BASE}/api/auth/login`);
-      console.log('[AUTH] API_BASE value:', API_BASE || '(empty - using Vite proxy)');
+      console.log('[AUTH] API_BASE value:', API_BASE);
       
       const response = await axios.post(`${API_BASE}/api/auth/login`, {
         username,
@@ -66,7 +65,7 @@ export function AuthProvider({ children }) {
       // Provide more helpful error messages
       let errorMessage = 'Login failed';
       if (error.code === 'ECONNREFUSED' || error.message.includes('Network Error')) {
-        errorMessage = 'Cannot connect to server. Please ensure the backend is running on port 5000.';
+        errorMessage = 'Cannot connect to server. Please ensure the backend is running on port 5001.';
       } else if (error.response?.data?.detail) {
         errorMessage = error.response.data.detail;
       } else if (error.response?.status === 401) {

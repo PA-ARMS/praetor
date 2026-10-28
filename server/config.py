@@ -1,7 +1,7 @@
 """Configuration settings"""
 from pydantic_settings import BaseSettings
 from pydantic import field_validator, model_validator
-from typing import List, Any
+from typing import List, Any, Optional
 import os
 import warnings
 
@@ -9,14 +9,26 @@ import warnings
 class Settings(BaseSettings):
     # Server
     HOST: str = "0.0.0.0"
-    PORT: int = 5000
+    PORT: int = 5001  # 5001 avoids Windows port 5000 conflict (AirPlay/UPnP)
     DEBUG: bool = False
     
     # Ollama
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    # Using 7B model for faster responses. Change to qwen2.5:14b for better accuracy but slower speed
-    OLLAMA_MODEL: str = "qwen2.5:7b"  # Faster model (7B) - Change to qwen2.5:14b for better accuracy
+    # Default: small model often present after `ollama pull llama3.2:1b`. Override in .env (e.g. initium/law_model:latest).
+    OLLAMA_MODEL: str = "llama3.2:1b"
     OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
+    # -1 = NVIDIA GPU 1 only (app sends num_gpu=99; Ollama must be started with CUDA_VISIBLE_DEVICES=1). 0 = CPU only.
+    OLLAMA_NUM_GPU: int = -1
+    # Context window for /api/generate. 8192 is a good default for speed; raise for very long attachments.
+    OLLAMA_NUM_CTX: int = 8192
+
+    # Chat/RAG speed (simple endpoint uses these)
+    CHAT_RAG_MAX_VARIATIONS: int = 4  # Max synonym query variants (was 10; each costs an embed+search)
+    CHAT_SIMPLE_N_RESULTS: int = 8
+    CHAT_SIMPLE_MAX_CONTEXT_SOURCES: int = 12
+    CHAT_SIMPLE_SOURCE_SNIPPET_CHARS: int = 700
+    CHAT_SIMPLE_MAX_OUTPUT_TOKENS: int = 768
+    CHAT_SKIP_CASE_CONTEXT: bool = True  # Skip scenario DB case lookup on simple chat (saves seconds)
     
     # Database
     DATABASE_URL: str = "sqlite:///./data/legal_ai.db"
@@ -24,6 +36,15 @@ class Settings(BaseSettings):
     # RAG
     CHROMA_DB_PATH: str = "./data/chroma_db"
     EMBEDDING_DIMENSION: int = 768
+    # In-process cache sizes (reduce if 32GB RAM is tight). RAG cache holds full search results; embed cache holds vectors.
+    RAG_QUERY_CACHE_SIZE: int = 256
+    OLLAMA_EMBED_CACHE_SIZE: int = 512
+
+    # Semantic response cache (SQLite + embeddings): similar questions reuse prior answers (skips RAG + LLM)
+    SEMANTIC_CACHE_ENABLED: bool = True
+    SEMANTIC_CACHE_MIN_SIMILARITY: float = 0.88
+    SEMANTIC_CACHE_MAX_CANDIDATES: int = 400
+    SEMANTIC_CACHE_MAX_PER_USER: int = 2000
     
     # Security
     JWT_SECRET: str = "change-this-secret-key"
@@ -37,7 +58,10 @@ class Settings(BaseSettings):
     
     # File Upload Limits
     MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50MB default
-    ALLOWED_FILE_EXTENSIONS: List[str] = [".pdf", ".txt", ".docx", ".html", ".htm", ".md"]
+    ALLOWED_FILE_EXTENSIONS: List[str] = [
+        ".pdf", ".txt", ".docx", ".html", ".htm", ".md",
+        ".png", ".jpg", ".jpeg", ".jfif", ".webp", ".tif", ".tiff", ".bmp",
+    ]
     
     # Password Policy
     MIN_PASSWORD_LENGTH: int = 12
@@ -117,7 +141,13 @@ class Settings(BaseSettings):
         """Strip whitespace from boolean environment variables before parsing"""
         if isinstance(data, dict):
             # List of boolean field names
-            boolean_fields = ['SCENARIO_DB_ENABLED', 'TTS_ENABLED', 'DEBUG', 'RATE_LIMIT_ENABLED', 'REQUIRE_PASSWORD_COMPLEXITY', 'LIVE_LEGAL_LOOKUP_ENABLED']
+            boolean_fields = [
+                'SCENARIO_DB_ENABLED', 'DEBUG', 'RATE_LIMIT_ENABLED',
+                'REQUIRE_PASSWORD_COMPLEXITY', 'DOCUMENT_READER_ENABLED', 'NEURAL_OCR_ENABLED',
+                'SUMMARIZATION_MODEL_ENABLED', 'BGE_EMBEDDINGS_ENABLED', 'ENTITY_EXTRACTION_ENABLED',
+                'TABLE_EXTRACTION_ENABLED', 'SEMANTIC_CACHE_ENABLED', 'DOCUMENT_LLM_EXTRACTION_ENABLED',
+                'LIVE_LEGAL_LOOKUP_ENABLED',
+            ]
             for field in boolean_fields:
                 if field in data and isinstance(data[field], str):
                     data[field] = data[field].strip()
@@ -130,14 +160,19 @@ class Settings(BaseSettings):
     CORPUS_DIR: str = "./data/corpus"
     AUDIO_DIR: str = "./data/audio"
     
-    # TTS (Text-to-Speech)
-    TTS_ENABLED: bool = True
-    TTS_MODEL: str = "tts_models/en/vctk/vits"  # High-quality multi-voice model
-    TTS_VOICE: str = ""  # Empty = use default voice
-    
-    # Feature Flags
-    SCENARIO_DB_ENABLED: bool = True
+    # Feature Flags (simplified build: scenario DB off by default; see docs/REMOVED_FEATURES.md)
+    SCENARIO_DB_ENABLED: bool = False  # Set True to re-enable Scenario Analysis
     SCENARIO_DB_PATH: str = "./data/scenario_db"  # Path for scenario ChromaDB
+
+    # Document Pipeline (parallel models)
+    DOCUMENT_READER_ENABLED: bool = True  # Unstructured layout parsing
+    NEURAL_OCR_ENABLED: bool = True  # EasyOCR fallback
+    SUMMARIZATION_MODEL_ENABLED: bool = True  # BART for document summaries
+    BGE_EMBEDDINGS_ENABLED: bool = False  # Set True when GPU has headroom; False avoids OOM with 7B
+    ENTITY_EXTRACTION_ENABLED: bool = True  # spaCy NER
+    TABLE_EXTRACTION_ENABLED: bool = True  # Camelot/Tabula
+    # LLM JSON pass for parties, amounts, issues, etc. (requires Ollama). Patterns + NER always run when enabled.
+    DOCUMENT_LLM_EXTRACTION_ENABLED: bool = True
     
     # Detail Level Configuration
     # Configures token limits and context handling for different response detail levels
@@ -168,6 +203,9 @@ class Settings(BaseSettings):
             "instruction": "Complete unrestricted analysis - include all cases, all citations, all relevant excerpts, procedural history, and comprehensive legal reasoning."
         }
     }
+    
+    # Partner reviewers for user corrections (Peyton, Yulia - round-robin assignment)
+    CORRECTION_REVIEWER_USERNAMES: List[str] = ["peyton.akers", "yulia.kovregina"]
     
     # API Keys (optional, used by download scripts)
     COURTLISTENER_API_KEY: str = ""  # CourtListener API key for downloading cases

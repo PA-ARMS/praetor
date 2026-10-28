@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import axios from 'axios'
 import './ScenarioAnalysis.css'
 
-const API_BASE = import.meta.env.VITE_API_URL || ''
+import { API_BASE } from '../apiConfig.js'
 
 function ScenarioAnalysis() {
   const [facts, setFacts] = useState('')

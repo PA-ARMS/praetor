@@ -6,10 +6,11 @@ from fastapi.security import HTTPBearer
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 from typing import Optional, List
-from datetime import timedelta
+from datetime import timedelta, datetime
 import json
+import secrets
 
-from server.models import get_db, User, UserRole
+from server.models import get_db, User, UserRole, ChatMessage, PasswordResetToken
 from server.services.auth_service import (
     authenticate_user,
     create_access_token,
@@ -45,6 +46,14 @@ class RegisterRequest(BaseModel):
     full_name: str
     role: UserRole
     supervising_attorney_id: Optional[int] = None
+
+
+class SignupRequest(BaseModel):
+    """Public signup - only allowed when no users exist (first user becomes admin)."""
+    username: str
+    email: EmailStr
+    password: str
+    full_name: str
 
 
 class UserResponse(BaseModel):
@@ -113,6 +122,52 @@ async def login(
         },
         must_change_password=getattr(user, 'must_change_password', False)
     )
+
+
+@router.post("/signup", response_model=UserResponse)
+async def signup(
+    request: SignupRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Create the first user account (no auth required).
+    Only succeeds when there are no users yet; the first user is created as Admin.
+    After that, new accounts must be created by an Admin or Attorney-Partner.
+    """
+    user_count = db.query(User).count()
+    if user_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account creation is by invitation only. Please contact your administrator."
+        )
+    try:
+        user = create_user(
+            db=db,
+            username=request.username,
+            email=request.email,
+            password=request.password,
+            full_name=request.full_name,
+            role=UserRole.ADMIN,
+            supervising_attorney_id=None
+        )
+        return UserResponse(
+            id=user.id,
+            username=user.username,
+            email=user.email,
+            full_name=user.full_name,
+            role=user.role.value,
+            supervising_attorney_id=user.supervising_attorney_id,
+            is_active=user.is_active
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during signup: {e}", exc_info=True)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error creating account. Please try again or contact support."
+        )
 
 
 @router.post("/register", response_model=UserResponse)
@@ -388,7 +443,7 @@ async def list_accessible_users(
         User.id.in_(accessible_ids),
         User.is_active == True
     ).all()
-    
+
     return UserListResponse(
         users=[
             UserResponse(
@@ -403,4 +458,113 @@ async def list_accessible_users(
             for user in users
         ]
     )
+
+
+class RequestPasswordResetRequest(BaseModel):
+    username_or_email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+
+@router.post("/request-password-reset")
+async def request_password_reset(
+    request: RequestPasswordResetRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Create a password reset token for the user.
+    No email is sent; the token is returned in the response (for dev / admin handoff).
+    In production you could send the token via email instead.
+    """
+    user = db.query(User).filter(
+        (User.username == request.username_or_email) | (User.email == request.username_or_email)
+    ).first()
+    if not user or not user.is_active:
+        # Do not reveal whether user exists
+        return {"message": "If an account exists with that username or email, a reset link would be sent."}
+
+    token = secrets.token_urlsafe(32)
+    expires_at = datetime.utcnow() + timedelta(hours=1)
+    db.add(PasswordResetToken(user_id=user.id, token=token, expires_at=expires_at))
+    db.commit()
+
+    reset_url = f"/reset-password?token={token}"
+    return {
+        "message": "Password reset token created. Use it within 1 hour.",
+        "reset_token": token,
+        "reset_url": reset_url
+    }
+
+
+@router.post("/reset-password")
+async def reset_password(
+    request: ResetPasswordRequest,
+    db: Session = Depends(get_db)
+):
+    """Reset password using a token from request-password-reset."""
+    from server.services.auth_service import get_password_hash, validate_password_strength
+
+    row = db.query(PasswordResetToken).filter(
+        PasswordResetToken.token == request.token,
+        PasswordResetToken.used_at.is_(None),
+        PasswordResetToken.expires_at > datetime.utcnow()
+    ).first()
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token"
+        )
+
+    try:
+        validate_password_strength(request.new_password)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+
+    user = db.query(User).filter(User.id == row.user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not found")
+
+    user.hashed_password = get_password_hash(request.new_password)
+    row.used_at = datetime.utcnow()
+    db.commit()
+
+    return {"message": "Password reset successfully. You can now sign in."}
+
+
+@router.get("/export-my-data")
+async def export_my_data(
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Export current user's data (profile + chat history) for compliance."""
+    messages = db.query(ChatMessage).filter(ChatMessage.user_id == current_user.id).order_by(ChatMessage.timestamp.asc()).all()
+    return {
+        "exported_at": datetime.utcnow().isoformat(),
+        "user": {
+            "id": current_user.id,
+            "username": current_user.username,
+            "email": current_user.email,
+            "full_name": current_user.full_name,
+            "role": current_user.role.value
+        },
+        "chat_history": [
+            {
+                "id": m.id,
+                "conversation_id": m.conversation_id,
+                "subject": m.subject,
+                "message": m.message,
+                "response": m.response[:5000] if m.response else None,
+                "timestamp": m.timestamp.isoformat() if m.timestamp else None
+            }
+            for m in messages
+        ]
+    }
 

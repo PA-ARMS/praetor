@@ -18,40 +18,59 @@ This system runs on a single PC and serves attorneys over the local network.
 
 ### 1. Configure Windows Firewall
 
-Allow incoming connections on ports 5000 (backend) and 3000 (frontend):
+Allow incoming connections on ports 5001 (backend) and 3000 (frontend):
 
 ```powershell
 # Run as Administrator
-New-NetFirewallRule -DisplayName "Virginia Legal AI Backend" -Direction Inbound -LocalPort 5000 -Protocol TCP -Action Allow
+New-NetFirewallRule -DisplayName "Virginia Legal AI Backend" -Direction Inbound -LocalPort 5001 -Protocol TCP -Action Allow
 New-NetFirewallRule -DisplayName "Virginia Legal AI Frontend" -Direction Inbound -LocalPort 3000 -Protocol TCP -Action Allow
 ```
 
 ### 2. Set Static IP (Recommended)
 
-1. Open Network Settings
-2. Change adapter options
-3. Right-click your network adapter → Properties
-4. Select "Internet Protocol Version 4 (TCP/IPv4)" → Properties
-5. Use static IP (e.g., 192.168.1.100)
-6. Note this IP for client configuration
+Keeps your PC at the same address (e.g., 192.168.1.53) so CORS and client config don't need updates.
+
+**Option A: Script (easiest)**  
+Right-click `SET_STATIC_IP.bat` → **Run as administrator**, or:
+```powershell
+# Run PowerShell as Administrator, then:
+cd C:\LAWFIRMAI
+.\scripts\set_static_ip.ps1
+```
+The script uses your current IP and locks it in.
+
+**Option B: Manual**  
+1. Open Settings → Network & Internet → Wi-Fi (or Ethernet) → Properties  
+2. Under "IP assignment", click Edit  
+3. Select "Manual", turn IPv4 On  
+4. IP address: `192.168.1.53` (or your desired IP)  
+5. Subnet: `255.255.255.0`  
+6. Gateway: `192.168.1.1` (usually your router)  
+7. Preferred DNS: `192.168.1.1` or `8.8.8.8`
+
+**Alternative:** Configure a DHCP reservation on your router so it always assigns the same IP to this PC's MAC address. No changes needed on the PC.
 
 ### 3. Configure Server
 
-Edit `server/.env`:
+Edit `.env` in the project root (copy from `server/.env.example` if needed).
 
+**Production setup (required):** Run `python scripts/production_setup.py` to generate secure secrets and set production-safe CORS. This updates `.env` with:
+- `JWT_SECRET` and `ENCRYPTION_KEY` (generated securely)
+- `CORS_ORIGINS` (restricted to localhost; add your LAN IP for network access)
+- `DEBUG=false`
+
+For LAN access, add your server IP to CORS_ORIGINS in `.env`:
 ```env
-HOST=0.0.0.0  # Listen on all interfaces
-PORT=5000
-CORS_ORIGINS=http://localhost:3000,http://192.168.1.*
-ALLOWED_IPS=192.168.1.0/24,127.0.0.1
+CORS_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000","http://192.168.1.100:3000"]
 ```
+Replace `192.168.1.100` with your server's static IP.
 
 ### 4. Configure Client
 
 Edit `client/.env` (create if needed):
 
 ```env
-VITE_API_URL=http://192.168.1.100:5000
+VITE_API_URL=http://192.168.1.100:5001
 ```
 
 Replace `192.168.1.100` with your server's IP address.
@@ -97,13 +116,13 @@ Use NSSM (Non-Sucking Service Manager) or Task Scheduler to run services automat
 ### Health Check
 
 Monitor service health:
-- Backend: `http://192.168.1.100:5000/health`
+- Backend: `http://192.168.1.100:5001/health`
 - Frontend: `http://192.168.1.100:3000`
 
 ## Troubleshooting
 
 1. **Can't access from network**: Check Windows Firewall rules
-2. **CORS errors**: Verify CORS_ORIGINS in server/.env includes client IPs
+2. **CORS errors**: Verify CORS_ORIGINS in .env includes your frontend URL(s)
 3. **Ollama not responding**: Ensure Ollama service is running (`ollama serve`)
-4. **Port already in use**: Change PORT in server/.env
+4. **Port already in use**: Change PORT in .env
 

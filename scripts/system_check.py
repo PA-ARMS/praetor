@@ -74,9 +74,6 @@ def check_dependencies():
     ]
     
     optional = [
-        "coqui-tts",
-        "torch",
-        "pyttsx3",
         "beautifulsoup4",
         "lxml",
         "pdfplumber",
@@ -102,13 +99,7 @@ def check_dependencies():
     print_info("\nOptional packages:")
     for pkg in optional:
         try:
-            if pkg == "coqui-tts":
-                from TTS.api import TTS
-            elif pkg == "torch":
-                import torch
-            elif pkg == "pyttsx3":
-                import pyttsx3
-            elif pkg == "beautifulsoup4":
+            if pkg == "beautifulsoup4":
                 import bs4
             elif pkg == "lxml":
                 import lxml

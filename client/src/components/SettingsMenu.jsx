@@ -1,12 +1,40 @@
 import React, { useState, useRef, useEffect } from 'react'
+import axios from 'axios'
 import { useAuth } from '../contexts/AuthContext'
-import VoiceSettings from './VoiceSettings'
 import './SettingsMenu.css'
+
+import { API_BASE } from '../apiConfig.js'
+import {
+  VOICE_CHANGE_EVENT,
+  getVoiceEnabled,
+  setVoiceEnabled,
+  stopSpeaking,
+} from '../utils/praetorVoice.js'
 
 function SettingsMenu() {
   const { user, logout } = useAuth()
   const [isOpen, setIsOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [showChangePassword, setShowChangePassword] = useState(false)
+  const [changePasswordForm, setChangePasswordForm] = useState({
+    current_password: '',
+    new_password: '',
+    confirm_password: ''
+  })
+  const [changePasswordError, setChangePasswordError] = useState(null)
+  const [changePasswordSuccess, setChangePasswordSuccess] = useState(false)
+  const [changingPassword, setChangingPassword] = useState(false)
   const menuRef = useRef(null)
+  const [voiceOn, setVoiceOn] = useState(() => getVoiceEnabled())
+
+  useEffect(() => {
+    const sync = (e) => {
+      const on = e?.detail?.on
+      setVoiceOn(typeof on === 'boolean' ? on : getVoiceEnabled())
+    }
+    window.addEventListener(VOICE_CHANGE_EVENT, sync)
+    return () => window.removeEventListener(VOICE_CHANGE_EVENT, sync)
+  }, [])
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -24,8 +52,6 @@ function SettingsMenu() {
       document.removeEventListener('mousedown', handleClickOutside)
     }
   }, [isOpen])
-
-  const isAdmin = user?.role === 'admin' || user?.role === 'attorney_partner'
 
   return (
     <div className="settings-menu-container" ref={menuRef}>
@@ -51,37 +77,68 @@ function SettingsMenu() {
 
           <div className="settings-menu-content">
             <div className="settings-section">
-              <div className="settings-section-title">Voice Settings</div>
-              <VoiceSettings />
-            </div>
-
-            {isAdmin && (
-              <div className="settings-section">
-                <div className="settings-section-title">System Administration</div>
-                <div className="settings-admin-options">
-                  <p className="settings-admin-note">
-                    System administration features are available through the control panel.
-                  </p>
-                  <p className="settings-admin-note">
-                    Use the desktop shortcut or run START_CONTROL_PANEL.bat
-                  </p>
-                </div>
-              </div>
-            )}
-
-            <div className="settings-section">
-              <div className="settings-section-title">AI Learning Status</div>
+              <div className="settings-section-title">Account</div>
               <button
-                className="learning-dashboard-button"
+                type="button"
+                className="settings-export-button"
                 onClick={() => {
-                  const url = window.location.origin + '/learning-dashboard.html'
-                  window.open(url, '_blank', 'width=1200,height=800,resizable=yes,scrollbars=yes')
+                  setShowChangePassword(true)
+                  setChangePasswordForm({ current_password: '', new_password: '', confirm_password: '' })
+                  setChangePasswordError(null)
+                  setChangePasswordSuccess(false)
                 }}
               >
-                🧠 Open Learning Dashboard
+                Change password
+              </button>
+            </div>
+
+            <div className="settings-section">
+              <div className="settings-section-title">Voice</div>
+              <label className="settings-voice-toggle">
+                <input
+                  type="checkbox"
+                  checked={voiceOn}
+                  onChange={(e) => {
+                    const on = e.target.checked
+                    setVoiceOn(on)
+                    setVoiceEnabled(on)
+                    if (!on) stopSpeaking()
+                  }}
+                />
+                Speak replies
+              </label>
+              <p className="settings-admin-note" style={{ marginTop: '0.5rem', fontSize: '0.8rem' }}>
+                P.R.A.E.T.O.R. reads answers aloud. The voice is fixed — a Cortana-style US voice when the PC has one, otherwise a British butler if available.
+              </p>
+            </div>
+
+            <div className="settings-section">
+              <div className="settings-section-title">Data & Privacy</div>
+              <button
+                type="button"
+                className="settings-export-button"
+                disabled={exporting}
+                onClick={async () => {
+                  setExporting(true)
+                  try {
+                    const res = await axios.get(`${API_BASE}/api/auth/export-my-data`)
+                    const blob = new Blob([JSON.stringify(res.data, null, 2)], { type: 'application/json' })
+                    const url = URL.createObjectURL(blob)
+                    const a = document.createElement('a')
+                    a.href = url
+                    a.download = `my-data-${new Date().toISOString().slice(0, 10)}.json`
+                    a.click()
+                    URL.revokeObjectURL(url)
+                  } catch (err) {
+                    alert(err.response?.data?.detail || 'Export failed')
+                  }
+                  setExporting(false)
+                }}
+              >
+                {exporting ? 'Exporting...' : 'Export my data'}
               </button>
               <p className="settings-admin-note" style={{ marginTop: '0.5rem', fontSize: '0.8rem' }}>
-                Opens in a new window for full-screen monitoring
+                Download your profile and chat history (JSON)
               </p>
             </div>
 
@@ -90,6 +147,91 @@ function SettingsMenu() {
                 Logout
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showChangePassword && (
+        <div className="settings-modal-overlay" onClick={() => setShowChangePassword(false)}>
+          <div className="settings-modal" onClick={e => e.stopPropagation()}>
+            <div className="settings-modal-header">
+              <h3>Change Password</h3>
+              <button type="button" className="settings-modal-close" onClick={() => setShowChangePassword(false)} aria-label="Close">&times;</button>
+            </div>
+            {changePasswordSuccess ? (
+              <div className="settings-modal-body">
+                <p className="settings-success-msg">Password changed successfully.</p>
+                <button type="button" className="settings-export-button" onClick={() => setShowChangePassword(false)}>Close</button>
+              </div>
+            ) : (
+              <form
+                className="settings-modal-body"
+                onSubmit={async (e) => {
+                  e.preventDefault()
+                  setChangePasswordError(null)
+                  if (changePasswordForm.new_password !== changePasswordForm.confirm_password) {
+                    setChangePasswordError('New passwords do not match')
+                    return
+                  }
+                  if (changePasswordForm.new_password.length < 12) {
+                    setChangePasswordError('New password must be at least 12 characters')
+                    return
+                  }
+                  setChangingPassword(true)
+                  try {
+                    await axios.post(`${API_BASE}/api/auth/change-password`, {
+                      current_password: changePasswordForm.current_password,
+                      new_password: changePasswordForm.new_password
+                    })
+                    setChangePasswordSuccess(true)
+                  } catch (err) {
+                    setChangePasswordError(err.response?.data?.detail || 'Failed to change password')
+                  } finally {
+                    setChangingPassword(false)
+                  }
+                }}
+              >
+                <div className="settings-form-group">
+                  <label>Current password</label>
+                  <input
+                    type="password"
+                    value={changePasswordForm.current_password}
+                    onChange={e => setChangePasswordForm(p => ({ ...p, current_password: e.target.value }))}
+                    required
+                    autoComplete="current-password"
+                  />
+                </div>
+                <div className="settings-form-group">
+                  <label>New password</label>
+                  <input
+                    type="password"
+                    value={changePasswordForm.new_password}
+                    onChange={e => setChangePasswordForm(p => ({ ...p, new_password: e.target.value }))}
+                    required
+                    minLength={12}
+                    autoComplete="new-password"
+                  />
+                </div>
+                <div className="settings-form-group">
+                  <label>Confirm new password</label>
+                  <input
+                    type="password"
+                    value={changePasswordForm.confirm_password}
+                    onChange={e => setChangePasswordForm(p => ({ ...p, confirm_password: e.target.value }))}
+                    required
+                    minLength={12}
+                    autoComplete="new-password"
+                  />
+                </div>
+                {changePasswordError && <div className="settings-form-error">{changePasswordError}</div>}
+                <div className="settings-modal-actions">
+                  <button type="button" onClick={() => setShowChangePassword(false)} className="settings-btn-secondary">Cancel</button>
+                  <button type="submit" disabled={changingPassword} className="settings-export-button">
+                    {changingPassword ? 'Changing...' : 'Change password'}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

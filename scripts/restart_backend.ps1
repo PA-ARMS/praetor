@@ -14,24 +14,11 @@ Set-Location $projectRoot
 # Set Python path
 $env:PYTHONPATH = $projectRoot
 
-# Ensure eSpeak NG is on PATH for Coqui TTS phonemizer
-$espeakPaths = @(
-    "C:\Program Files\eSpeak NG",
-    "C:\Program Files (x86)\eSpeak NG"
-)
-foreach ($p in $espeakPaths) {
-    if (Test-Path $p) {
-        if (-not ($env:PATH -split ";" | ForEach-Object { $_.Trim() } | Where-Object { $_ -eq $p })) {
-            $env:PATH = "$env:PATH;$p"
-        }
-    }
-}
-
 # Find and kill existing backend processes
 Write-Host "Stopping existing backend processes..." -ForegroundColor Yellow
 
-# Find processes using port 5000
-$processes = Get-NetTCPConnection -LocalPort 5000 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
+# Find processes using port 5001
+$processes = Get-NetTCPConnection -LocalPort 5001 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
 
 if ($processes) {
     foreach ($procId in $processes) {
@@ -49,19 +36,19 @@ if ($processes) {
 }
 
 # Wait a moment for port to be released
-Write-Host "  Waiting for port 5000 to be released..." -ForegroundColor Gray
+Write-Host "  Waiting for port 5001 to be released..." -ForegroundColor Gray
 Start-Sleep -Seconds 2
 
 # Start backend server
 Write-Host ""
 Write-Host "Starting backend server..." -ForegroundColor Green
-Write-Host "  Command: python -m uvicorn server.main:app --host 0.0.0.0 --port 5000" -ForegroundColor Gray
+Write-Host "  Command: python -m uvicorn server.main:app --host 0.0.0.0 --port 5001" -ForegroundColor Gray
 Write-Host ""
 Write-Host "Backend server starting in new window..." -ForegroundColor Yellow
 Write-Host ""
 
 # Start in new window
-Start-Process cmd -ArgumentList "/k", "cd /d `"$projectRoot`" && set PYTHONPATH=$projectRoot && python -m uvicorn server.main:app --host 0.0.0.0 --port 5000"
+Start-Process cmd -ArgumentList "/k", "cd /d `"$projectRoot`" && set PYTHONPATH=$projectRoot && python -m uvicorn server.main:app --host 0.0.0.0 --port 5001"
 
 # Wait a moment
 Start-Sleep -Seconds 3
@@ -69,9 +56,9 @@ Start-Sleep -Seconds 3
 # Check if server started
 Write-Host "Checking server status..." -ForegroundColor Cyan
 try {
-    $response = Invoke-WebRequest -Uri "http://localhost:5000/health" -TimeoutSec 5 -ErrorAction Stop
+    $response = Invoke-WebRequest -Uri "http://localhost:5001/health" -TimeoutSec 5 -ErrorAction Stop
     Write-Host "  Backend server is running!" -ForegroundColor Green
-    Write-Host "  Health check: http://localhost:5000/health" -ForegroundColor Gray
+    Write-Host "  Health check: http://localhost:5001/health" -ForegroundColor Gray
     Write-Host ""
 } catch {
     Write-Host "  Backend may still be starting..." -ForegroundColor Yellow

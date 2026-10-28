@@ -2,8 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import axios from 'axios'
 import './AdminDashboard.css'
-
-const API_BASE = import.meta.env.VITE_API_URL || ''
+import { API_BASE } from '../apiConfig.js'
 
 function AdminDashboard() {
   const { user, register } = useAuth()
@@ -15,8 +14,12 @@ function AdminDashboard() {
     aiEngine: 'checking',
     scenarioDb: 'checking',
     lastRestart: null,
-    uptime: 0
+    uptime: 0,
+    lastBackup: null
   })
+  const [auditLogs, setAuditLogs] = useState([])
+  const [auditTotal, setAuditTotal] = useState(0)
+  const [auditLoading, setAuditLoading] = useState(false)
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [showEditModal, setShowEditModal] = useState(false)
   const [selectedUser, setSelectedUser] = useState(null)
@@ -84,16 +87,31 @@ function AdminDashboard() {
       status.scenarioDb = 'disabled'
     }
 
-    // Get uptime
+    // Get uptime and last backup
     try {
       const response = await axios.get(`${API_BASE}/api/system/status`)
       status.uptime = response.data?.uptime || 0
       status.lastRestart = response.data?.started_at
+      status.lastBackup = response.data?.last_backup?.timestamp || null
     } catch {
       // System status endpoint may not exist
     }
 
     setSystemStatus(status)
+  }, [])
+
+  // Fetch audit logs
+  const fetchAuditLogs = useCallback(async () => {
+    setAuditLoading(true)
+    try {
+      const response = await axios.get(`${API_BASE}/api/audit/logs`, { params: { limit: 50 } })
+      setAuditLogs(response.data?.logs || [])
+      setAuditTotal(response.data?.total || 0)
+    } catch {
+      setAuditLogs([])
+      setAuditTotal(0)
+    }
+    setAuditLoading(false)
   }, [])
 
   // Fetch stats
@@ -119,7 +137,7 @@ function AdminDashboard() {
   useEffect(() => {
     const load = async () => {
       setLoading(true)
-      await Promise.all([fetchUsers(), checkSystemStatus(), fetchStats()])
+      await Promise.all([fetchUsers(), checkSystemStatus(), fetchStats(), fetchAuditLogs()])
       setLoading(false)
     }
     load()
@@ -127,7 +145,7 @@ function AdminDashboard() {
     // Refresh status every 30 seconds
     const interval = setInterval(checkSystemStatus, 30000)
     return () => clearInterval(interval)
-  }, [fetchUsers, checkSystemStatus, fetchStats])
+  }, [fetchUsers, checkSystemStatus, fetchStats, fetchAuditLogs])
 
   // Create user
   const handleCreateUser = async (userData) => {
@@ -246,6 +264,14 @@ function AdminDashboard() {
         </div>
       </div>
 
+      {/* System live banner - visible when all core services are up */}
+      {systemStatus.backend === 'online' && systemStatus.database === 'online' && systemStatus.aiEngine !== 'checking' && (
+        <div className="admin-system-live-banner">
+          <span className="admin-system-live-icon">●</span>
+          <span>System is live — all core services operational. Staff can use the application.</span>
+        </div>
+      )}
+
       {/* System Status Cards */}
       <div className="status-grid">
         <div className={`status-card ${systemStatus.backend}`}>
@@ -341,6 +367,51 @@ function AdminDashboard() {
           <div className="stat-value">{stats.documentsUploaded}</div>
           <div className="stat-label">Documents</div>
         </div>
+        <div className="stat-card">
+          <div className="stat-value stat-value-small">
+            {systemStatus.lastBackup ? new Date(systemStatus.lastBackup).toLocaleString() : 'Never'}
+          </div>
+          <div className="stat-label">Last Backup</div>
+        </div>
+      </div>
+
+      {/* Audit Logs */}
+      <div className="audit-section">
+        <div className="section-header">
+          <h3>Audit Logs</h3>
+          <button type="button" className="btn-secondary btn-small" onClick={fetchAuditLogs} disabled={auditLoading}>
+            {auditLoading ? 'Loading...' : 'Refresh'}
+          </button>
+        </div>
+        <div className="audit-table-container">
+          {auditLoading && auditLogs.length === 0 ? (
+            <p className="audit-loading">Loading audit logs...</p>
+          ) : (
+            <table className="audit-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Action</th>
+                  <th>User ID</th>
+                  <th>Path</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {auditLogs.map((log) => (
+                  <tr key={log.id}>
+                    <td>{log.timestamp ? new Date(log.timestamp).toLocaleString() : '—'}</td>
+                    <td><span className="audit-action">{log.action}</span></td>
+                    <td>{log.user_id ?? '—'}</td>
+                    <td className="audit-path">{log.path || '—'}</td>
+                    <td>{log.status ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        {auditTotal > 0 && <p className="audit-total">Showing latest of {auditTotal} log entries</p>}
       </div>
 
       {/* Users Table */}

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 import './LearningDashboard.css'
 
-const API_BASE = import.meta.env.VITE_API_URL || ''
+import { API_BASE } from '../apiConfig.js'
 
 function LearningDashboard() {
   const [stats, setStats] = useState({

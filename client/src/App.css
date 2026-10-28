@@ -148,3 +148,25 @@ main {
   border: 1px solid rgba(212, 175, 55, 0.3);
   box-shadow: 0 0 20px rgba(212, 175, 55, 0.3);
 }
+
+.App-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.5rem;
+  padding: 0.75rem 1rem;
+  background: rgba(13, 27, 42, 0.6);
+  border-top: 1px solid rgba(212, 175, 55, 0.15);
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+.App-version {
+  font-family: monospace;
+}
+.App-compliance-link {
+  color: rgba(212, 175, 55, 0.8);
+  text-decoration: none;
+}
+.App-compliance-link:hover {
+  text-decoration: underline;
+}

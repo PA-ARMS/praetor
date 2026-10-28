@@ -5,7 +5,7 @@ Validates and enhances prompts/responses according to the AI Laws code
 import json
 import re
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from server.config import settings
 
 
@@ -89,8 +89,19 @@ class GuardrailsService:
         from server.services.ai_laws_protection import ai_laws_protection
         return ai_laws_protection.load_ai_laws() or {}
     
-    def build_system_prompt(self, is_first_message: bool = False, has_conversation_history: bool = False, user_name: str = None) -> str:
-        """Build system prompt from AI Laws - AI Laws are the FUNDAMENTAL BASE CODE"""
+    def build_system_prompt(
+        self,
+        is_first_message: bool = False,
+        has_conversation_history: bool = False,
+        user_name: str = None,
+        response_format: str = "research_memo",
+    ) -> str:
+        """Build system prompt from AI Laws - AI Laws are the FUNDAMENTAL BASE CODE.
+
+        response_format:
+          - research_memo (default): structured firm-style research memo (Markdown ## sections).
+          - conversational: single flowing answer; still bound by AI Laws and source rules when context is provided.
+        """
         if not self.ai_laws:
             return "You are a legal research assistant. Provide accurate, cited legal analysis."
         
@@ -226,9 +237,38 @@ class GuardrailsService:
         # OPERATIONAL INSTRUCTIONS (Must comply with AI Laws above)
         # ========================================================================
         
+        fmt = (response_format or "research_memo").strip().lower()
+        if fmt in ("memo", "research_memo", "firm", "legal_memo"):
+            fmt = "research_memo"
+        elif fmt in ("conversational", "chat", "plain"):
+            fmt = "conversational"
+        else:
+            fmt = "research_memo"
+
         prompt_parts.append("You are Praetor (Professional Research and Analysis Electronic Tool for Online Research).")
-        prompt_parts.append("Provide a cohesive, natural response to the user's query. Write in a clear, flowing manner without breaking the response into separate sections or parts.")
-        prompt_parts.append("")
+        if fmt == "research_memo":
+            prompt_parts.append("OUTPUT: Professional legal RESEARCH MEMO for law-firm use. Use Markdown with ## headings exactly as below (in this order). Be concise but complete.")
+            prompt_parts.append("")
+            prompt_parts.append("## Issue")
+            prompt_parts.append("- Restate the legal question in one short paragraph. Name jurisdiction (e.g. Virginia, federal) when known from the user message or excerpts.")
+            prompt_parts.append("")
+            prompt_parts.append("## Short answer")
+            prompt_parts.append("- 2–6 sentences. Direct answer. Reference excerpt numbers [1], [2], … when citing material from the provided context.")
+            prompt_parts.append("")
+            prompt_parts.append("## Analysis")
+            prompt_parts.append("- Organized discussion: elements, standards, procedure, or competing considerations as appropriate. Tie each legal proposition to the excerpts or state that the point is not found in the provided sources.")
+            prompt_parts.append("")
+            prompt_parts.append("## Authorities in context")
+            prompt_parts.append("- Bullet list: each line should map a proposition to [n] excerpt numbers. Do not list authorities that are not in the provided excerpts.")
+            prompt_parts.append("")
+            prompt_parts.append("## Gaps and limits")
+            prompt_parts.append("- What the excerpts do not resolve; unknown facts; reminder that human verification (including citators) may be required before filing or advice to clients.")
+            prompt_parts.append("")
+            prompt_parts.append("Do not use informal '1st box / 2nd box' or ten-box templates unless the user explicitly asks for that layout.")
+            prompt_parts.append("")
+        else:
+            prompt_parts.append("Provide a cohesive, natural response. Use clear paragraphs; light use of bullets is allowed. Do not use the ## research memo headings unless the user asks for a formal memo.")
+            prompt_parts.append("")
         
         # Relationship building guidance
         if has_conversation_history:
@@ -289,11 +329,74 @@ class GuardrailsService:
         prompt_parts.append("  Example: Miranda v. Arizona, 384 U.S. 436 (1966)")
         prompt_parts.append("  Format: [Case Name], [Volume] U.S. [Page] ([Year])")
         prompt_parts.append("- Virginia statutes: § [citation] format (e.g., § 18.2-57.2)")
+        prompt_parts.append("- Virginia Administrative Code (regulations): [Title] VAC [Chapter]-[Section] format (e.g., 18 VAC 120-10-10)")
         prompt_parts.append("- Always cite sources using Bluebook format where possible (per Article IV).")
         prompt_parts.append("- When citing SCOTUS cases, ALWAYS include the Bluebook citation in this exact format.")
         prompt_parts.append("If no controlling authority exists, state: 'No controlling authority found.' (per Article I)")
+        prompt_parts.append("")
+        prompt_parts.append("ADMINISTRATIVE LAW (when applicable):")
+        prompt_parts.append("- Regulations (Virginia Administrative Code) have the force of law when properly promulgated.")
+        prompt_parts.append("- When interpreting regulations, consider agency authority under the enabling statute.")
+        prompt_parts.append("- For federal administrative law: cite Chevron deference, Auer deference, or agency interpretation where relevant.")
+        prompt_parts.append("- Virginia: VAPA (Virginia Administrative Process Act, Code § 2.2-4000 et seq.) governs agency procedures.")
+        prompt_parts.append("- Exhaustion of administrative remedies may be required before judicial review.")
+        prompt_parts.append("")
         
         return "\n".join(prompt_parts)
+
+    def build_general_system_prompt(self, user_name: str = None) -> str:
+        """
+        Build a lightweight prompt for non-legal/general questions.
+        Keeps responses clear and helpful without legal-format constraints.
+        """
+        name_part = f" The user's name is {user_name}." if user_name else ""
+        return (
+            "You are Praetor, a helpful assistant."
+            f"{name_part} "
+            "For non-legal/general questions, answer directly and concisely. "
+            "Do not force legal citations, legal formatting templates, or legal disclaimers "
+            "unless the user asks a legal question."
+        )
+
+    def detect_query_intent(self, user_prompt: str) -> str:
+        """
+        Detect whether a prompt is legal or general.
+        Returns: 'legal', 'general', or 'mixed'
+        """
+        text = (user_prompt or "").lower()
+        if not text.strip():
+            return "general"
+
+        legal_terms = [
+            "statute", "code", "vac", "regulation", "administrative code", "vapa",
+            "case", "precedent", "court", "judge", "appeal", "jurisdiction",
+            "liability", "damages", "contract", "tort", "negligence", "criminal",
+            "felony", "misdemeanor", "indictment", "plea", "motion", "evidence",
+            "constitutional", "fourth amendment", "fifth amendment", "due process",
+            "injunction", "deposition", "discovery", "legal", "law", "attorney",
+            "commonwealth", "u.s.", "va.", "virginia", "virginia code", "usc", "bluebook",
+            "administrative remedies", "promulgated", "force of law",
+            "legislative", "general assembly", "session", "enacted", "effective",
+            "take effect", "july 1", "uncodified", "bill", "chapter", "policy change",
+            "lis.virginia", "law portal",
+            # Common criminal/family-law phrasing that users ask in plain English
+            "domestic violence", "protective order", "restraining order", "no contact order",
+            "assault", "battery", "arrest", "warrant", "charge", "charges",
+            "penalty", "sentencing", "expungement", "victim", "defendant", "prosecution"
+        ]
+        general_terms = [
+            "2+2", "weather", "joke", "translate", "recipe", "song", "movie",
+            "python script", "javascript", "email draft", "grammar", "summarize this"
+        ]
+
+        legal_hits = sum(1 for t in legal_terms if t in text)
+        general_hits = sum(1 for t in general_terms if t in text)
+
+        if legal_hits > 0 and general_hits > 0:
+            return "mixed"
+        if legal_hits > 0:
+            return "legal"
+        return "general"
     
     async def validate_and_correct(self, response: str, query: str, sources: List[Dict]) -> str:
         """
@@ -510,8 +613,121 @@ class GuardrailsService:
             enhanced = f"[Presuming Virginia jurisdiction] {user_prompt}"
         else:
             enhanced = user_prompt
-        
+
         return enhanced
+
+    # Phrases that indicate the base model ignored Praetor / AI Laws (training-data disclaimers).
+    _GENERIC_DISCLAIMER_MARKERS = (
+        "don't have real-time",
+        "do not have real-time",
+        "no real-time",
+        "as of my last update",
+        "as of my knowledge cutoff",
+        "my training data",
+        "my knowledge cutoff",
+        "i cannot browse",
+        "i can't browse",
+        "i do not have access to the internet",
+        "i don't have access to the internet",
+        "check the official website of the virginia general assembly",
+        "recommend checking the official",
+    )
+
+    def looks_like_generic_disclaimer(self, response: str) -> bool:
+        if not response or not response.strip():
+            return False
+        lower = response.lower()
+        return any(marker in lower for marker in self._GENERIC_DISCLAIMER_MARKERS)
+
+    def anti_generic_disclaimer_rules(self) -> str:
+        return (
+            "\n\nFORBIDDEN (never use these — you are Praetor with a local Virginia legal corpus, not a generic chatbot):\n"
+            "- Do NOT say you lack 'real-time data', 'internet access', or 'training cutoff' knowledge.\n"
+            "- Do NOT tell the user to 'check the General Assembly website' as your main answer.\n"
+            "- Do NOT guess whether laws exist; use ONLY the numbered source excerpts in context.\n"
+            "- If excerpts do not answer the question, begin with: **No controlling authority found** "
+            "in the provided sources, then explain what was/was not in the excerpts and that the "
+            "local statute index may need refresh (UPDATE_VA_LAWS.bat) or LIS verification for new session acts.\n"
+        )
+
+    def is_session_law_query(self, user_message: str) -> bool:
+        """True for new laws / effective date / session enactment questions."""
+        q = (user_message or "").lower()
+        if not q.strip():
+            return False
+        session_terms = (
+            "new law", "new laws", "session law", "uncodified", "enacted",
+            "take effect", "effective date", "effective july", "july 1",
+            "general assembly", "chapter act", "bill passed", "legislation",
+            "policy change", "changes effective",
+        )
+        return any(t in q for t in session_terms) or bool(re.search(r"july\s*1", q))
+
+    def parse_effective_year(self, user_message: str) -> Optional[int]:
+        m = re.search(r"\b(20\d{2})\b", user_message or "")
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                pass
+        return None
+
+    def legal_session_law_message(
+        self,
+        user_message: str,
+        year: Optional[int] = None,
+        corpus_busy: bool = False,
+    ) -> str:
+        year = year or self.parse_effective_year(user_message) or 2026
+        busy = (
+            " The index rebuild may still be running—check SHOW_VA_REBUILD_PROGRESS.bat."
+            if corpus_busy
+            else ""
+        )
+        return (
+            f"**No controlling authority found** in the indexed sources for **new Virginia laws "
+            f"effective July 1, {year}** (or other session acts for that year).\n\n"
+            "**Why this happens:**\n"
+            "- Praetor searches a **local copy** of the Code of Virginia and **uncodified/session acts** "
+            "from LIS CSV exports—not live bill tracking.\n"
+            f"- The bulk uncodified-acts file on this server currently has **no {year} session chapter list** "
+            f"(latest bulk years are through **2025**). Until {year} acts are downloaded and ingested, Praetor "
+            f"cannot list every new law effective July 1, {year}.\n"
+            "- The Code of Virginia index may also be **incomplete** if `UPDATE_VA_LAWS.bat` has not finished."
+            f"{busy}\n\n"
+            "**What you can do:**\n"
+            f"1. Run **`UPDATE_VA_LAWS.bat`** overnight (watch with **`SHOW_VA_REBUILD_PROGRESS.bat`**).\n"
+            f"2. For the authoritative {year} session list, use "
+            "[Virginia LIS — Bill Tracking](https://lis.virginia.gov) and the "
+            "[Code of Virginia](https://law.lis.virginia.gov) after acts are codified.\n"
+            "3. Ask Praetor about a **specific bill** (e.g. HB 1234), **chapter** (e.g. Ch. 456), or "
+            "**Code section** (e.g. § 18.2-57.2) once you have it from LIS.\n\n"
+            "*Live official lookup (when enabled) fetches current LIS pages; it is not open-web browsing. Verify independently before filing.*"
+        )
+
+    def legal_empty_sources_message(
+        self,
+        user_message: str,
+        corpus_busy: bool = False,
+    ) -> str:
+        busy = (
+            " The Virginia Code index is currently rebuilding; statute search may be incomplete."
+            if corpus_busy
+            else " The local statute index may be incomplete—run UPDATE_VA_LAWS.bat when not using chat."
+        )
+        return (
+            "**No controlling authority found** in the provided sources for this question.\n\n"
+            "Praetor could not retrieve Virginia Code or session-law excerpts that answer your query. "
+            "If live official lookup is on, Praetor also checks law.lis.virginia.gov. "
+            "It does not browse the open internet. Answers must still come from retrieved official text."
+            f"{busy}\n\n"
+            "**What you can do:**\n"
+            "1. Run `UPDATE_VA_LAWS.bat` overnight to rebuild the Code of Virginia and uncodified acts index.\n"
+            "2. For brand-new 2026 session bills effective July 1, also verify on "
+            "[Virginia LIS](https://lis.virginia.gov) — until those acts are ingested, they may not appear here.\n"
+            "3. Rephrase with a specific Code section (e.g. § 18.2-57.2) or bill/chapter number if you have one.\n\n"
+            "*Analysis limited to sources available in the local database; independently verify before client advice or filing.*"
+        )
 
 
 guardrails_service = GuardrailsService()

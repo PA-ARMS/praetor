@@ -1,11 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react'
 import axios from 'axios'
 import TypingText from './TypingText'
-import VoicePlayer from './VoicePlayer'
-import ScenarioPredictionPanel from './ScenarioPredictionPanel'
 import LegalResponseFormatter from './LegalResponseFormatter'
 import ExpandableSources from './ExpandableSources'
+import { useAuth } from '../contexts/AuthContext'
 import './ChatInterface.css'
+import { API_BASE } from '../apiConfig.js'
 import {
   VOICE_CHANGE_EVENT,
   getVoiceEnabled,
@@ -14,21 +14,32 @@ import {
   stopSpeaking,
 } from '../utils/praetorVoice.js'
 
-// Use relative URL so Vite proxy handles it (works for both local and network access)
-const API_BASE = import.meta.env.VITE_API_URL || ''
+/** Matches server config.ALLOWED_FILE_EXTENSIONS (subset clients check before upload). */
+const ACCEPT_UPLOAD =
+  '.pdf,.txt,.docx,.html,.htm,.md,.png,.jpg,.jpeg,.jfif,.webp,.tif,.tiff,.bmp'
+
+const ALLOWED_EXT = new Set(
+  ACCEPT_UPLOAD.split(',').map((x) => x.trim().toLowerCase().replace(/^\./, ''))
+)
+
+const DEFAULT_DOC_WORKFLOW_PROMPT =
+  'I attached document(s). Summarize what they show based on the extracted text, note any deadlines or key dates you see, ' +
+  'and give me numbered practical next steps (what to do next, what to verify, and what to gather). If text looks like a poor scan, say so.'
 
 function ChatInterface() {
+  const { token } = useAuth()
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [sources, setSources] = useState([])
   const [files, setFiles] = useState([])
+  const [dragOver, setDragOver] = useState(false)
   const [uploadStatus, setUploadStatus] = useState(null)
-  const [autoPlayVoice, setAutoPlayVoice] = useState(localStorage.getItem('tts_autoplay') === 'true')
   const [detailLevel, setDetailLevel] = useState(null) // null = auto (smart default)
   const [recommendedLevel, setRecommendedLevel] = useState(null)
   const [showDetailSelector, setShowDetailSelector] = useState(false)
   const [exhaustiveMode, setExhaustiveMode] = useState(false)
+  const [skipClarification, setSkipClarification] = useState(false)
   const [useWeb, setUseWeb] = useState(true)
   const [voiceOn, setVoiceOn] = useState(() => getVoiceEnabled())
   const [summaryCounts, setSummaryCounts] = useState({})
@@ -97,6 +108,7 @@ function ChatInterface() {
   }, [messages])
 
   const [conversationId, setConversationId] = useState(null)
+  const [chatReady, setChatReady] = useState(null)
 
   useEffect(() => {
     const sync = (e) => {
@@ -120,13 +132,66 @@ function ChatInterface() {
     speakResponse(last.content)
   }, [messages, voiceOn])
 
+  useEffect(() => {
+    let cancelled = false
+    async function check() {
+      try {
+        const r = await axios.get(`${API_BASE}/api/chat/ready`, { timeout: 5000 })
+        if (!cancelled) {
+          const data = r.data || {}
+          if (data.corpus_update_in_progress) {
+            data.ready = true
+            data.message =
+              data.message ||
+              'Statute index is rebuilding. Chat works; legal search may be slow until indexing finishes.'
+          }
+          setChatReady(data)
+        }
+      } catch {
+        if (cancelled) return
+        setChatReady({
+          ready: false,
+          message:
+            'Backend not reachable at ' +
+            API_BASE +
+            '. Start the server on port 5001 (START_BACKEND.bat). For a different host, set VITE_API_URL in client/.env and restart Vite.',
+        })
+      }
+    }
+    check()
+    return () => { cancelled = true }
+  }, [])
+
+  const mergeFileList = (incoming) => {
+    const list = Array.from(incoming || []).filter((f) => {
+      const ext = (f.name.split('.').pop() || '').toLowerCase()
+      return ALLOWED_EXT.has(ext)
+    })
+    if (list.length === 0) return
+    setFiles((prev) => {
+      const seen = new Set(prev.map((p) => `${p.name}:${p.size}`))
+      const next = [...prev]
+      for (const f of list) {
+        const k = `${f.name}:${f.size}`
+        if (!seen.has(k)) {
+          seen.add(k)
+          next.push(f)
+        }
+      }
+      return next
+    })
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!input.trim() || loading) return
+    if (loading) return
 
-    const userMessage = { role: 'user', content: input }
+    const messageText = input.trim() || (files.length > 0 ? DEFAULT_DOC_WORKFLOW_PROMPT : '')
+    if (!messageText) return
+
+    const userMessage = { role: 'user', content: messageText }
     setMessages(prev => [...prev, userMessage])
-    const currentInput = input
+    const currentInput = messageText
     const docSources = files.map(f => f.name)
     setInput('')
     setLoading(true)
@@ -134,19 +199,55 @@ function ChatInterface() {
     stopSpeaking()
 
     try {
-      // If files selected, upload them first so they become searchable
+      // If files selected, upload them first so they become searchable; capture extracted_text for chat (reliable path).
+      let attachmentExtractedText = ''
+      const indexerSummaries = []
       if (files.length > 0) {
         setUploadStatus('Uploading documents...')
+        const uploadHeaders = {}
+        if (token) uploadHeaders['Authorization'] = `Bearer ${token}`
         for (let i = 0; i < files.length; i++) {
           const file = files[i]
           const form = new FormData()
           form.append('file', file)
           form.append('jurisdiction', 'Virginia')
-          await axios.post(`${API_BASE}/api/rag/upload-document`, form, {
-            headers: { 'Content-Type': 'multipart/form-data' }
+          const isPDF = file.name.toLowerCase().endsWith('.pdf')
+          const up = await axios.post(`${API_BASE}/api/rag/upload-document`, form, {
+            headers: uploadHeaders,
+            timeout: isPDF ? 1_800_000 : 300_000,
           })
+          if (up.data?.status !== 'success') {
+            throw new Error(
+              (typeof up.data?.detail === 'string' && up.data.detail) ||
+                up.data?.message ||
+                'Upload did not return success'
+            )
+          }
+          const sum = up.data?.understanding?.summary
+          if (typeof sum === 'string' && sum.trim()) {
+            indexerSummaries.push(`## ${file.name}\n${sum.trim()}`)
+          }
+          const t = up.data?.extracted_text
+          if (typeof t === 'string' && t.trim()) {
+            attachmentExtractedText += `\n\n--- ${file.name} ---\n\n${t}`
+          } else {
+            console.warn(`Upload ${file.name}: no extracted_text in response (empty PDF / OCR failed?)`, up.data)
+          }
         }
-        setUploadStatus(`Uploaded ${files.length} document(s).`)
+        let merged = attachmentExtractedText.trim()
+        if (indexerSummaries.length > 0) {
+          merged =
+            '[Indexer summaries — use to identify what each file is before reading raw text; exhibits may OCR as noise.]\n\n' +
+            indexerSummaries.join('\n\n---\n\n') +
+            '\n\n=== Extracted plain text (full pass; may include exhibit OCR) ===\n\n' +
+            merged
+        }
+        attachmentExtractedText = merged.slice(0, 150000)
+        if (docSources.length > 0 && !attachmentExtractedText) {
+          setUploadStatus('Uploaded but no extractable text — chat may not see the file. Try a text PDF or enable OCR.')
+        } else {
+          setUploadStatus(`Uploaded ${files.length} document(s).`)
+        }
         setFiles([])
       } else {
         setUploadStatus(null)
@@ -155,126 +256,89 @@ function ChatInterface() {
       const payload = {
         message: currentInput,
         conversation_id: conversationId,
+        // Always request RAG from the UI; backend intent routing now decides
+        // whether to actually use legal retrieval for this specific prompt.
         use_rag: true,
         use_web: useWeb,
-        max_results: exhaustiveMode ? 0 : 25,  // Limit to 25 results for speed (0 = all for exhaustive mode)
-        detail_level: detailLevel,  // null for auto-detect
-        exhaustive_search: exhaustiveMode
+        ...(docSources.length > 0 ? { doc_sources: docSources } : {}),
+        ...(attachmentExtractedText.length > 0 ? { attachment_extracted_text: attachmentExtractedText } : {}),
       }
-      if (docSources.length > 0) {
-        payload['doc_sources'] = docSources
+      const chatHeaders = { 'Content-Type': 'application/json' }
+      if (token) chatHeaders['Authorization'] = `Bearer ${token}`
+      const response = await axios.post(`${API_BASE}/api/chat/simple`, payload, {
+        timeout: 180000,
+        headers: chatHeaders
+      })
+      
+      if (!response.data?.response?.trim()) {
+        throw new Error('Empty response from server. Try again in a moment.')
       }
-      console.log('Sending chat request...', { message: currentInput.substring(0, 50) + '...' })
-      const startTime = Date.now()
-      const response = await axios.post(`${API_BASE}/api/chat/query`, payload, {
-        timeout: 600000  // 10 minute timeout (600 seconds) - Ollama can be slow with large models
-      })
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-      console.log(`Chat response received after ${elapsed}s!`, { 
-        hasResponse: !!response.data.response,
-        responseLength: response.data.response?.length || 0,
-        hasSources: response.data.sources?.length || 0
-      })
       
       // Update conversation ID if this is a new conversation
       if (!conversationId && response.data.conversation_id) {
         setConversationId(response.data.conversation_id)
       }
 
-      // Debug: log scenario prediction data
-      console.log('ChatInterface - Full response data:', {
-        has_scenario_prediction: !!response.data.scenario_prediction,
-        scenario_prediction: response.data.scenario_prediction,
-        response_keys: Object.keys(response.data)
-      });
-      
-      if (response.data.scenario_prediction) {
-        console.log('ChatInterface - Received scenario prediction:', JSON.stringify(response.data.scenario_prediction, null, 2));
-        console.log('ChatInterface - Prediction similar_scenarios:', response.data.scenario_prediction.similar_scenarios);
-        console.log('ChatInterface - Prediction top_similar_scenarios:', response.data.scenario_prediction.top_similar_scenarios?.length || 0);
-      } else {
-        console.log('ChatInterface - NO scenario_prediction in response!');
-      }
-
-      // Update recommended level if provided
-      if (response.data.recommended_level) {
-        setRecommendedLevel(response.data.recommended_level)
-      }
-
-      if (response.data.message_id) {
-        setSummaryCounts(prev => ({
-          ...prev,
-          [response.data.message_id]: {
-            total: response.data.total_sources ?? null,
-            unique: response.data.unique_sources ?? null
-          }
-        }))
-      }
-
-      // Check if response is empty or missing
       const responseText = response.data.response || ''
-      if (!responseText || responseText.trim() === '') {
-        console.error('WARNING: Empty response received from backend!', {
-          responseData: response.data,
-          hasResponse: !!response.data.response,
-          responseType: typeof response.data.response,
-          responseLength: response.data.response?.length || 0
-        })
-      }
-
       const aiMessage = {
         role: 'assistant',
-        content: responseText || 'No response received from the AI. Please try again.',
+        content: responseText || 'No response received. Please try again.',
         sources: response.data.sources || [],
         warnings: response.data.warnings || [],
-        scenarioPrediction: response.data.scenario_prediction || null,
-        detailLevel: response.data.detail_level,
-        verificationStatus: response.data.verification_status || null,
-        authoritativeSourcesCount: response.data.authoritative_sources_count ?? null,
-        secondarySourcesCount: response.data.secondary_sources_count ?? null,
-        searchTotalResults: response.data.search_total_results ?? null,
-        searchUniqueSources: response.data.search_unique_sources ?? null,
-        conflictMessages: response.data.conflict_messages || [],
         messageId: response.data.message_id,
-        isTyping: responseText && responseText.trim() !== ''  // Only mark as typing if there's actual content
+        isTyping: false,
+        clarificationOnly: false,
+        clarificationQuestions: null,
       }
-      
-      console.log('ChatInterface - Created aiMessage:', {
-        hasContent: !!aiMessage.content,
-        contentLength: aiMessage.content?.length || 0,
-        contentPreview: aiMessage.content?.substring(0, 100) || '(empty)',
-        isTyping: aiMessage.isTyping,
-        hasScenarioPrediction: !!aiMessage.scenarioPrediction
-      })
-
       setMessages(prev => [...prev, aiMessage])
       setSources(response.data.sources || [])
     } catch (error) {
       console.error('Chat error:', error)
+      console.error('Error details:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        request: error.config
+      })
+      
       let errorText = 'An error occurred while processing your request.'
       
+      // Handle 400 Bad Request (validation errors)
+      if (error.response?.status === 400) {
+        const errorData = error.response?.data
+        if (errorData?.message) {
+          errorText = errorData.message
+        } else if (errorData?.detail) {
+          errorText = Array.isArray(errorData.detail) 
+            ? errorData.detail.map(d => d.msg || d).join(', ')
+            : errorData.detail
+        } else {
+          errorText = 'Invalid request. Please check your message and try again.'
+        }
+      }
+      
       if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
-        // Request timeout
-        errorText = 'Request timed out. The AI is taking too long to respond. This may happen with complex queries. Please try a shorter question or wait a moment and try again.'
+        errorText = 'Request timed out. The AI can take 1–5 minutes for complex queries. Try a shorter question or try again.'
       } else if (error.response) {
-        // Server responded with error
-        const detail = error.response.data?.detail || error.response.statusText
+        const detail = (typeof error.response.data?.detail === 'string')
+          ? error.response.data.detail
+          : (Array.isArray(error.response.data?.detail) ? error.response.data.detail.map(d => d.msg || d).join(', ') : error.response.statusText)
         errorText = `Error (${error.response.status}): ${detail}`
-        
         if (error.response.status === 401) {
-          errorText = 'Authentication required. Please log in again.'
+          errorText = 'Session expired or not logged in. Please log out and log in again, then try your question again.'
         } else if (error.response.status === 500) {
-          if (detail && 'timeout' in detail.toLowerCase()) {
-            errorText = 'The AI response timed out. This may happen with large queries. Please try a shorter question or wait a moment and try again.'
+          const rawDetail = (error.response.data?.detail || '').toString()
+          const d = rawDetail.toLowerCase()
+          if (d.includes('ollama') || d.includes('timeout') || d.includes('model')) {
+            errorText = rawDetail.length > 400 ? rawDetail.slice(0, 400) + '...' : rawDetail
           } else {
-            errorText = `Server error: ${detail}. Please check that Ollama is running and try again.`
+            errorText = rawDetail.length > 300 ? rawDetail.slice(0, 300) + '...' : (rawDetail || `Server error (${error.response.status}). Check backend logs.`)
           }
         }
       } else if (error.request) {
-        // Request made but no response
-        errorText = 'No response from server. Please check that the backend is running on port 5000.'
+        errorText = 'No response from server. Is the backend running on port 5001? Start it and try again.'
       } else {
-        // Error setting up request
         errorText = `Error: ${error.message}`
       }
       
@@ -289,61 +353,57 @@ function ChatInterface() {
     }
   }
 
-  // Listen for auto-play setting changes
-  useEffect(() => {
-    const handleStorageChange = () => {
-      setAutoPlayVoice(localStorage.getItem('tts_autoplay') === 'true')
-    }
-    window.addEventListener('storage', handleStorageChange)
-    // Also check periodically (for same-window changes)
-    const interval = setInterval(handleStorageChange, 500)
-    return () => {
-      window.removeEventListener('storage', handleStorageChange)
-      clearInterval(interval)
-    }
-  }, [])
-
-  // Get the latest prediction from the most recent assistant message
-  // Check both typing and non-typing messages to catch predictions immediately
-  const allAssistantMessages = messages.filter(msg => msg.role === 'assistant' && msg.scenarioPrediction)
-  const latestPrediction = allAssistantMessages.length > 0 
-    ? allAssistantMessages[allAssistantMessages.length - 1].scenarioPrediction 
-    : null
-  
-  // Debug: log latest prediction and all messages with predictions
-  console.log('ChatInterface - All assistant messages with predictions:', allAssistantMessages.length);
-  allAssistantMessages.forEach((msg, idx) => {
-    console.log(`Message ${idx}:`, {
-      hasPrediction: !!msg.scenarioPrediction,
-      isTyping: msg.isTyping,
-      prediction: msg.scenarioPrediction
-    });
-  });
-  
-  if (latestPrediction) {
-    console.log('ChatInterface - Latest prediction for panel:', latestPrediction);
-    console.log('Latest prediction similar_scenarios:', latestPrediction.similar_scenarios);
-    console.log('Latest prediction top_similar_scenarios:', latestPrediction.top_similar_scenarios?.length || 0);
-  } else {
-    console.log('ChatInterface - No prediction found in any messages');
-  }
-
   return (
     <div className="chat-interface-wrapper">
-      <div className="chat-interface">
+      <div
+        className={`chat-interface chat-drop-zone ${dragOver ? 'drag-over' : ''}`}
+        onDragEnter={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          setDragOver(true)
+        }}
+        onDragOver={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          setDragOver(true)
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          if (!e.currentTarget.contains(e.relatedTarget)) setDragOver(false)
+        }}
+        onDrop={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          setDragOver(false)
+          mergeFileList(e.dataTransfer?.files)
+        }}
+      >
         <div className="chat-messages" ref={messagesContainerRef}>
         {messages.length === 0 && (
           <div className="welcome-message">
             <h2>P.R.A.E.T.O.R. System Online.</h2>
             <p>Awaiting tactical legal parameters.</p>
             <p className="disclaimer">
-              <strong>Protocol:</strong> All responses follow C.R.A.C. format. Verify citations (e.g., § 18.2-57.2). Live official lookup pulls current Code text from law.lis.virginia.gov — not the open internet.
+              <strong>Protocol:</strong> Legal questions use a structured research memo (Issue, Short answer, Analysis, Authorities, Gaps). Verify all citations before filing or client advice. Live official lookup pulls current Code text from law.lis.virginia.gov — not the open internet.
             </p>
+            <p className="doc-workflow-hint">
+              Attach or drag and drop PDFs, Word, images, or text files. The system extracts text (OCR for scans), then answers—including a summary and practical next steps. You can send with only attachments.
+            </p>
+            {chatReady && (
+              <p className={`chat-ready-status ${chatReady.ready ? 'ready' : 'not-ready'}`}>
+                {chatReady.corpus_update_in_progress
+                  ? `⚠ ${chatReady.message || 'Statute index rebuilding — chat may be slow'}`
+                  : chatReady.ready
+                    ? '✓ Chat ready'
+                    : `⚠ ${chatReady.message || 'Chat not ready'}`}
+              </p>
+            )}
           </div>
         )}
         
         {messages.map((msg, idx) => (
-          <div key={`msg-${idx}-${msg.content?.substring(0, 20)}`} className={`message ${msg.role}`}>
+          <div key={`msg-${idx}-${msg.content?.substring(0, 20)}`} className={`message ${msg.role} ${msg.clarificationOnly ? 'clarification-only' : ''}`}>
             <div className="message-content">
               <div className="message-text">
                 {msg.role === 'assistant' && !msg.error && msg.isTyping !== false ? (
@@ -371,10 +431,22 @@ function ChatInterface() {
                   msg.content
                 )}
               </div>
-              {msg.role === 'assistant' && !msg.error && msg.isTyping === false && (
-                <VoicePlayer key={`voice-${idx}-${msg.content?.substring(0, 20)}`} text={msg.content} autoPlay={autoPlayVoice} />
+              {msg.role === 'assistant' && msg.clarificationOnly && msg.clarificationQuestions && msg.clarificationQuestions.length > 0 && !msg.isTyping && (
+                <div className="clarification-prompts">
+                  <span className="clarification-prompt-label">Click to answer:</span>
+                  {msg.clarificationQuestions.map((q, qIdx) => (
+                    <button
+                      key={qIdx}
+                      type="button"
+                      className="clarification-prompt-btn"
+                      onClick={() => setInput(q)}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
               )}
-              {msg.role === 'assistant' && !msg.error && !msg.isTyping && msg.verificationStatus && (
+              {msg.role === 'assistant' && !msg.error && !msg.isTyping && msg.verificationStatus && !msg.clarificationOnly && (
                 <div className={`guardrail-status ${msg.verificationStatus !== 'verified' ? 'guardrail-warning' : ''}`}>
                   <strong>Guardrail status:</strong>{' '}
                   {msg.verificationStatus === 'verified' ? 'Verified by multiple authoritative sources' : 'Limited authoritative support — cross-check required'}
@@ -389,14 +461,14 @@ function ChatInterface() {
                   )}
                 </div>
               )}
-              {msg.sources && msg.sources.length > 0 && !msg.isTyping && (
+              {msg.sources && msg.sources.length > 0 && !msg.isTyping && !msg.clarificationOnly && (
                 <ExpandableSources 
                   sources={msg.sources}
                   messageId={msg.messageId}
                   summaryCounts={summaryCounts}
                 />
               )}
-              {msg.warnings && msg.warnings.length > 0 && !msg.isTyping && (
+              {msg.warnings && msg.warnings.length > 0 && !msg.isTyping && !msg.clarificationOnly && (
                 <div className="warnings">
                   {msg.warnings.map((warning, i) => (
                     <div key={i} className="warning">⚠️ {warning}</div>
@@ -423,61 +495,17 @@ function ChatInterface() {
         <div ref={messagesEndRef} />
         </div>
 
-        {/* Detail Level Selector - Collapsible Advanced Options */}
-        <div className="advanced-options-container">
-          <button 
-            type="button"
-            className="advanced-options-toggle"
-            onClick={() => setShowDetailSelector(!showDetailSelector)}
-          >
-            {recommendedLevel && !showDetailSelector && (
-              <span className="recommended-badge">Recommended: {recommendedLevel}</span>
-            )}
-            {showDetailSelector ? '▼' : '▶'} Advanced Options
-          </button>
-          
-          {showDetailSelector && (
-            <div className="advanced-options-content">
-              <div className="detail-level-selector">
-                <label>Response Detail Level:</label>
-                <select 
-                  value={detailLevel || 'auto'} 
-                  onChange={(e) => setDetailLevel(e.target.value === 'auto' ? null : e.target.value)}
-                >
-                  <option value="auto">⚡ Auto (Smart Default)</option>
-                  <option value="summary">📝 Quick Summary (~700 words)</option>
-                  <option value="standard">📄 Standard (~1,400 words)</option>
-                  <option value="comprehensive">📚 Comprehensive (~4,500 words)</option>
-                  <option value="complete">📖 Complete (~12,000 words)</option>
-                  <option value="unlimited">🔥 Unlimited (~24,000 words)</option>
-                </select>
-                {recommendedLevel && (
-                  <span className="recommendation-note">
-                    Smart default recommends: <strong>{recommendedLevel}</strong>
-                  </span>
-                )}
-              </div>
-              
-              <div className="exhaustive-mode-toggle">
-                <label>
-                  <input 
-                    type="checkbox" 
-                    checked={exhaustiveMode} 
-                    onChange={(e) => setExhaustiveMode(e.target.checked)}
-                  />
-                  <span>🔍 Exhaustive Search (Trial Prep Mode)</span>
-                </label>
-                <p className="exhaustive-note">
-                  Searches 500+ sources with 10+ query variations. Takes 3-5 minutes.
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-
         <form className="chat-input-form" onSubmit={handleSubmit}>
-        <label className="attach-label">
-          <input type="file" multiple onChange={(e) => setFiles(Array.from(e.target.files || []))} />
+        <label className="attach-label" title="Choose files or drag onto chat">
+          <input
+            type="file"
+            multiple
+            accept={ACCEPT_UPLOAD}
+            onChange={(e) => {
+              mergeFileList(e.target.files)
+              e.target.value = ''
+            }}
+          />
           <span>Attach</span>
         </label>
         {uploadStatus && <span className="upload-status">{uploadStatus}</span>}
@@ -485,11 +513,17 @@ function ChatInterface() {
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask a legal question or request a form..."
+          placeholder={
+            files.length > 0
+              ? 'Optional: add instructions, or send for summary + next steps…'
+              : 'Ask a legal question, or attach / drop files for extraction and next steps…'
+          }
           disabled={loading}
           className="chat-input"
+          maxLength={50000}
+          title="Max 50,000 characters"
         />
-        <button type="submit" disabled={loading || !input.trim()} className="send-button">
+        <button type="submit" disabled={loading || (!input.trim() && files.length === 0)} className="send-button">
           Send
         </button>
       </form>
@@ -517,11 +551,27 @@ function ChatInterface() {
           Speak replies
         </label>
       </div>
+        {files.length > 0 && (
+          <div className="queued-files" aria-live="polite">
+            <span className="queued-files-label">Queued ({files.length})</span>
+            <ul className="queued-files-list">
+              {files.map((f, i) => (
+                <li key={`${f.name}-${f.size}-${i}`} className="file-chip">
+                  <span className="file-chip-name" title={f.name}>{f.name}</span>
+                  <button
+                    type="button"
+                    className="file-chip-remove"
+                    onClick={() => setFiles((prev) => prev.filter((_, idx) => idx !== i))}
+                    aria-label={`Remove ${f.name}`}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
-      <ScenarioPredictionPanel 
-        prediction={latestPrediction}
-        key={`prediction-${latestPrediction ? 'has-data' : 'empty'}-${messages.length}`}
-      />
     </div>
   )
 }

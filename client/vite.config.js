@@ -14,9 +14,12 @@ export default defineConfig({
     // In production builds, VITE_API_URL must be set to point to backend
     proxy: {
       '/api': {
-        target: 'http://localhost:5000',
+        target: 'http://localhost:5001',
         changeOrigin: true,
-        secure: false
+        secure: false,
+        // Large PDFs + OCR + LLM can exceed default proxy timeouts (causes axios "Network Error").
+        timeout: 1_800_000,
+        proxyTimeout: 1_800_000,
       }
     }
   },

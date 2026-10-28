@@ -5,7 +5,7 @@ import './ChatHistory.css'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-const API_BASE = import.meta.env.VITE_API_URL || ''
+import { API_BASE } from '../apiConfig.js'
 
 function ChatHistory() {
   const { user } = useAuth()

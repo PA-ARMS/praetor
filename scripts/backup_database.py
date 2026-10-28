@@ -93,13 +93,24 @@ def backup_database(keep_days: int = 30, include_chromadb: bool = False):
     except Exception as e:
         logger.warning(f"Error cleaning up old backups: {e}")
     
-    # Summary
+    # Write last_backup.json for Admin dashboard / system status
     if backup_success:
+        try:
+            import json
+            last_backup_path = backup_dir / "last_backup.json"
+            with open(last_backup_path, "w") as f:
+                json.dump({
+                    "timestamp": datetime.now().isoformat(),
+                    "success": backup_success,
+                    "errors": backup_errors
+                }, f, indent=2)
+        except Exception as e:
+            logger.warning(f"Could not write last_backup.json: {e}")
         logger.info(f"Backup completed successfully: {', '.join(backup_success)}")
     if backup_errors:
         logger.error(f"Backup errors: {', '.join(backup_errors)}")
         return 1
-    
+
     return 0
 
 

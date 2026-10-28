@@ -1,8 +1,15 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 import './UploadDocument.css'
 
-const API_BASE = import.meta.env.VITE_API_URL || ''
+import { API_BASE } from '../apiConfig.js'
+
+function getAuthHeaders() {
+  const token = localStorage.getItem('token')
+  const h = {}
+  if (token) h['Authorization'] = `Bearer ${token}`
+  return h
+}
 
 function UploadDocument() {
   const [files, setFiles] = useState([])
@@ -14,6 +21,38 @@ function UploadDocument() {
   const [docStats, setDocStats] = useState(null)
   const [analyzeMotion, setAnalyzeMotion] = useState(false)
   const [motionAnalysis, setMotionAnalysis] = useState(null)
+  const [matters, setMatters] = useState([])
+  const [selectedMatterId, setSelectedMatterId] = useState('')
+  const [filterMatterId, setFilterMatterId] = useState('')
+  const [indexedDocs, setIndexedDocs] = useState([])
+  const [indexedLoading, setIndexedLoading] = useState(false)
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await axios.get(`${API_BASE}/api/matters`, { headers: getAuthHeaders() })
+        setMatters(r.data || [])
+      } catch (_) {}
+    })()
+  }, [])
+
+  const loadIndexedDocs = async (matterId = null) => {
+    setIndexedLoading(true)
+    try {
+      const url = matterId
+        ? `${API_BASE}/api/rag/documents?matter_id=${encodeURIComponent(matterId)}`
+        : `${API_BASE}/api/rag/documents`
+      const r = await axios.get(url, { headers: getAuthHeaders() })
+      setIndexedDocs(r.data?.documents || [])
+    } catch (_) {
+      setIndexedDocs([])
+    }
+    setIndexedLoading(false)
+  }
+
+  useEffect(() => {
+    loadIndexedDocs(filterMatterId || null)
+  }, [filterMatterId])
 
   const onSelectFiles = (e) => {
     setFiles(Array.from(e.target.files || []))
@@ -28,11 +67,8 @@ function UploadDocument() {
 
     try {
       // Get auth token if available
-      const token = localStorage.getItem('token')
-      const headers = { 'Content-Type': 'multipart/form-data' }
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`
-      }
+      // Never set Content-Type for FormData — axios must add the multipart boundary.
+      const headers = getAuthHeaders()
 
       let successCount = 0
       let failCount = 0
@@ -46,6 +82,9 @@ function UploadDocument() {
         if (analyzeMotion) {
           form.append('analyze_against_scenarios', 'true')
         }
+        if (selectedMatterId && selectedMatterId.trim()) {
+          form.append('matter_id', selectedMatterId.trim())
+        }
 
         try {
           // Check if file is PDF - might need OCR
@@ -56,7 +95,8 @@ function UploadDocument() {
           
           const response = await axios.post(`${API_BASE}/api/rag/upload-document`, form, {
             headers,
-            timeout: isPDF ? 300000 : 60000, // 5 minutes for PDFs (OCR can take time), 1 minute for others
+            // Large exhibits PDFs + OCR + LLM can run many minutes; dev proxy matches vite.config.js (30m).
+            timeout: isPDF ? 1_800_000 : 300_000,
             onUploadProgress: (evt) => {
               if (evt.total) {
               const pct = Math.round((evt.loaded / evt.total) * 100)
@@ -87,6 +127,7 @@ function UploadDocument() {
               textLength: response.data.text_length
             })
           }
+          loadIndexedDocs(filterMatterId || null)
           
           // Store motion analysis if provided
           if (response.data.motion_analysis) {
@@ -168,8 +209,23 @@ function UploadDocument() {
         </div>
 
         <div className="field">
+          <label>Matter (optional)</label>
+          <select value={selectedMatterId} onChange={(e) => setSelectedMatterId(e.target.value)}>
+            <option value="">— None —</option>
+            {matters.filter(m => m.status === 'open').map(m => (
+              <option key={m.id} value={String(m.id)}>{m.matter_number} — {m.display_name}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="field">
           <label>Choose files</label>
-          <input type="file" multiple onChange={onSelectFiles} />
+          <input
+            type="file"
+            multiple
+            accept=".pdf,.txt,.docx,.html,.htm,.md,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp"
+            onChange={onSelectFiles}
+          />
         </div>
 
         <div className="field">
@@ -221,6 +277,54 @@ function UploadDocument() {
           <strong>Corpus Status:</strong> {docStats.total} document(s) indexed
         </div>
       )}
+
+      <section className="indexed-docs-section">
+        <h3>Indexed documents</h3>
+        <div className="field">
+          <label>Filter by matter</label>
+          <select value={filterMatterId} onChange={(e) => setFilterMatterId(e.target.value)}>
+            <option value="">All documents</option>
+            {matters.map(m => (
+              <option key={m.id} value={String(m.id)}>{m.matter_number} — {m.display_name}</option>
+            ))}
+          </select>
+        </div>
+        {indexedLoading ? (
+          <p className="indexed-loading">Loading...</p>
+        ) : indexedDocs.length === 0 ? (
+          <p className="indexed-empty">No indexed documents.</p>
+        ) : (
+          <ul className="indexed-docs-list">
+            {indexedDocs.map(d => (
+              <li key={d.doc_id}>
+                <span className="indexed-source">{d.source || d.doc_id}</span>
+                {d.is_core && <span className="indexed-core-badge" title="System core laws – cannot be removed">System</span>}
+                {d.upload_date && <span className="indexed-date">{d.upload_date.slice(0, 10)}</span>}
+                {d.matter_id && <span className="indexed-matter">Matter: {d.matter_id}</span>}
+                {!d.is_core && (
+                  <button
+                    type="button"
+                    className="indexed-delete"
+                    onClick={async () => {
+                      if (!confirm(`Remove "${d.source || d.doc_id}" from the index?`)) return
+                      try {
+                        await axios.delete(`${API_BASE}/api/rag/documents/${encodeURIComponent(d.doc_id)}`, { headers: getAuthHeaders() })
+                        loadIndexedDocs(filterMatterId || null)
+                        const statsRes = await axios.get(`${API_BASE}/api/rag/stats`, { headers: getAuthHeaders() }).catch(() => null)
+                        if (statsRes?.data?.total_documents != null) setDocStats(s => ({ ...(s || {}), total: statsRes.data.total_documents }))
+                      } catch (err) {
+                        alert(err?.response?.data?.detail || err?.message || 'Delete failed')
+                      }
+                    }}
+                  >
+                    Remove
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {motionAnalysis && !motionAnalysis.error && (
         <div className="motion-analysis">

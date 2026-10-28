@@ -17,7 +17,8 @@
 
 param(
     [switch]$Uninstall,
-    [switch]$Status
+    [switch]$Status,
+    [switch]$AtLogon
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,7 +28,7 @@ $AppName = "AKLegalVault"
 $AppDisplayName = "AK Legal Vault"
 $AppPath = $PSScriptRoot
 $LogPath = Join-Path $AppPath "logs"
-$StartupDelay = 30  # Seconds to wait after boot before starting
+$StartupDelay = 5  # Seconds to wait before starting (was 30 for boot; reduced for faster manual start)
 
 # Colors for console output
 function Write-Success { Write-Host $args[0] -ForegroundColor Green }
@@ -38,16 +39,16 @@ function Write-Error { Write-Host $args[0] -ForegroundColor Red }
 # Header
 Clear-Host
 Write-Host ""
-Write-Host "  ╔═══════════════════════════════════════════════════════════╗" -ForegroundColor DarkYellow
-Write-Host "  ║                                                           ║" -ForegroundColor DarkYellow
-Write-Host "  ║           " -NoNewline -ForegroundColor DarkYellow
+Write-Host "  ============================================================" -ForegroundColor DarkYellow
+Write-Host "  |                                                           |" -ForegroundColor DarkYellow
+Write-Host "  |           " -NoNewline -ForegroundColor DarkYellow
 Write-Host "AK LEGAL VAULT" -NoNewline -ForegroundColor Yellow
-Write-Host "                              ║" -ForegroundColor DarkYellow
-Write-Host "  ║           " -NoNewline -ForegroundColor DarkYellow
+Write-Host "                              |" -ForegroundColor DarkYellow
+Write-Host "  |           " -NoNewline -ForegroundColor DarkYellow
 Write-Host "Service Management System" -NoNewline -ForegroundColor White
-Write-Host "                    ║" -ForegroundColor DarkYellow
-Write-Host "  ║                                                           ║" -ForegroundColor DarkYellow
-Write-Host "  ╚═══════════════════════════════════════════════════════════╝" -ForegroundColor DarkYellow
+Write-Host "                    |" -ForegroundColor DarkYellow
+Write-Host "  |                                                           |" -ForegroundColor DarkYellow
+Write-Host "  ============================================================" -ForegroundColor DarkYellow
 Write-Host ""
 
 # Create logs directory
@@ -69,65 +70,65 @@ function Get-ServiceStatus {
     $monitorTask = Get-ScheduledTask -TaskName $MonitorTaskName -ErrorAction SilentlyContinue
     
     Write-Host "  Service Configuration:" -ForegroundColor Yellow
-    Write-Host "  ─────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+    Write-Host "  ---------------------------------------------------------" -ForegroundColor DarkGray
     
     # Auto-Start Status
     Write-Host "  Auto-Start on Boot:      " -NoNewline
     if ($startupTask) {
         if ($startupTask.State -eq 'Ready') {
-            Write-Success "✓ Enabled"
+            Write-Success "[OK] Enabled"
         } else {
-            Write-Warning "⚠ $($startupTask.State)"
+            Write-Warning "(!) $($startupTask.State)"
         }
     } else {
-        Write-Host "✗ Not Configured" -ForegroundColor Red
+        Write-Host "[X] Not Configured" -ForegroundColor Red
     }
     
     # Midnight Restart Status
     Write-Host "  Midnight Restart:        " -NoNewline
     if ($restartTask) {
         if ($restartTask.State -eq 'Ready') {
-            Write-Success "✓ Enabled (12:00 AM daily)"
+            Write-Success "[OK] Enabled (12:00 AM daily)"
         } else {
-            Write-Warning "⚠ $($restartTask.State)"
+            Write-Warning "(!) $($restartTask.State)"
         }
     } else {
-        Write-Host "✗ Not Configured" -ForegroundColor Red
+        Write-Host "[X] Not Configured" -ForegroundColor Red
     }
     
     # Monitor Status
     Write-Host "  Health Monitor:          " -NoNewline
     if ($monitorTask) {
         if ($monitorTask.State -eq 'Ready') {
-            Write-Success "✓ Enabled (every 5 min)"
+            Write-Success "[OK] Enabled (every 3 min)"
         } else {
-            Write-Warning "⚠ $($monitorTask.State)"
+            Write-Warning "(!) $($monitorTask.State)"
         }
     } else {
-        Write-Host "✗ Not Configured" -ForegroundColor Red
+        Write-Host "[X] Not Configured" -ForegroundColor Red
     }
     
     Write-Host ""
     
     # Check if servers are running
     Write-Host "  Running Processes:" -ForegroundColor Yellow
-    Write-Host "  ─────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+    Write-Host "  ---------------------------------------------------------" -ForegroundColor DarkGray
     
-    $pythonProcs = Get-Process -Name "python" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*uvicorn*" -or $_.CommandLine -like "*server.main*" }
+    $pythonProcs = Get-CimInstance Win32_Process -Filter "name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*uvicorn*" -or $_.CommandLine -like "*server.main*" }
     $nodeProcs = Get-Process -Name "node" -ErrorAction SilentlyContinue
     
     Write-Host "  Backend Server (Python):  " -NoNewline
     if ($pythonProcs) {
-        Write-Success "✓ Running (PID: $($pythonProcs.Id -join ', '))"
+        Write-Success "[OK] Running (PID: $(($pythonProcs | ForEach-Object { $_.ProcessId }) -join ', '))"
     } else {
-        Write-Host "✗ Not Running" -ForegroundColor Red
+        Write-Host "[X] Not Running" -ForegroundColor Red
     }
     
     Write-Host "  Frontend Server (Node):   " -NoNewline
     if ($nodeProcs) {
-        Write-Success "✓ Running (PID: $($nodeProcs.Id -join ', '))"
+        Write-Success "[OK] Running (PID: $($nodeProcs.Id -join ', '))"
     } else {
-        Write-Host "✗ Not Running" -ForegroundColor Red
+        Write-Host "[X] Not Running" -ForegroundColor Red
     }
     
     Write-Host ""
@@ -137,151 +138,39 @@ function Install-Services {
     Write-Info "Installing AK Legal Vault services..."
     Write-Host ""
     
-    # Create startup script
-    $startupScript = @"
-# AK Legal Vault - Startup Script
-`$ErrorActionPreference = 'SilentlyContinue'
-`$AppPath = '$AppPath'
-`$LogPath = '$LogPath'
-
-# Log function
-function Write-Log {
-    param([string]`$Message)
-    `$timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    Add-Content -Path (Join-Path `$LogPath 'service.log') -Value "[`$timestamp] `$Message"
-}
-
-Write-Log "Starting AK Legal Vault..."
-
-# Wait for system to stabilize
-Start-Sleep -Seconds $StartupDelay
-
-# Set working directory
-Set-Location `$AppPath
-
-# Set environment
-`$env:PYTHONPATH = `$AppPath
-`$env:SCENARIO_DB_ENABLED = 'True'
-
-# Start backend
-Write-Log "Starting backend server..."
-Start-Process -FilePath 'python' -ArgumentList '-m', 'uvicorn', 'server.main:app', '--host', '0.0.0.0', '--port', '5000', '--timeout-keep-alive', '600' -WindowStyle Hidden -WorkingDirectory `$AppPath
-
-Start-Sleep -Seconds 5
-
-# Start frontend
-Write-Log "Starting frontend server..."
-Set-Location (Join-Path `$AppPath 'client')
-Start-Process -FilePath 'npm' -ArgumentList 'run', 'dev' -WindowStyle Hidden -WorkingDirectory (Join-Path `$AppPath 'client')
-
-Write-Log "Services started successfully"
-"@
-
+    # Resolve full paths so SYSTEM (at boot) can run without PATH
+    $PythonExe = (Get-Command python -ErrorAction SilentlyContinue).Source
+    # Prefer npm.cmd over npm.ps1 - Start-Process with .ps1 opens in Notepad instead of executing
+    $npmPath = (Get-Command npm -ErrorAction SilentlyContinue).Source
+    $NpmCmd = if ($npmPath -match '\.ps1$') { $npmPath -replace '\.ps1$', '.cmd' } else { $npmPath }
+    if (-not $PythonExe) {
+        Write-Error "Python not found in PATH. Install Python and ensure it's in PATH, then run this script again."
+        exit 1
+    }
+    if (-not $NpmCmd) {
+        Write-Error "npm not found in PATH. Install Node.js and ensure it's in PATH, then run this script again."
+        exit 1
+    }
+    Write-Info "  Python: $PythonExe"
+    Write-Info "  npm:   $NpmCmd"
+    Write-Host ""
+    
+    $PythonExeEscaped = $PythonExe.Replace("'", "''")
+    $NpmCmdEscaped = $NpmCmd.Replace("'", "''")
+    
+    # Create startup script from template (avoids inline string parsing issues)
     $startupScriptPath = Join-Path $AppPath "service_startup.ps1"
+    $startupScript = (Get-Content (Join-Path $AppPath "scripts\service_startup_template.ps1") -Raw).Replace('APPPATH', $AppPath).Replace('LOGPATH', $LogPath).Replace('PYTHONEXE', $PythonExeEscaped).Replace('NPMCMD', $NpmCmdEscaped).Replace('STARTUPDELAY', $StartupDelay)
     Set-Content -Path $startupScriptPath -Value $startupScript -Force
     
-    # Create restart script with notification
-    $restartScript = @"
-# AK Legal Vault - Restart Script
-`$ErrorActionPreference = 'SilentlyContinue'
-`$AppPath = '$AppPath'
-`$LogPath = '$LogPath'
-
-function Write-Log {
-    param([string]`$Message)
-    `$timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    Add-Content -Path (Join-Path `$LogPath 'service.log') -Value "[`$timestamp] `$Message"
-}
-
-Write-Log "Scheduled restart initiated..."
-
-# Send restart notification to connected clients (if API is available)
-try {
-    `$body = @{
-        type = 'system_restart'
-        message = 'System maintenance restart in progress. Service will resume shortly.'
-        timestamp = (Get-Date -Format 'o')
-    } | ConvertTo-Json
-    
-    Invoke-RestMethod -Uri 'http://localhost:5000/api/system/broadcast' -Method POST -Body `$body -ContentType 'application/json' -TimeoutSec 5
-    Start-Sleep -Seconds 5  # Give clients time to see notification
-} catch {
-    Write-Log "Could not send restart notification (API may be down)"
-}
-
-# Stop existing processes gracefully
-Write-Log "Stopping existing processes..."
-
-# Stop backend (Python/uvicorn)
-Get-Process -Name 'python' -ErrorAction SilentlyContinue | Where-Object { 
-    `$_.CommandLine -like '*uvicorn*' -or `$_.CommandLine -like '*server.main*' 
-} | ForEach-Object {
-    `$_ | Stop-Process -Force
-    Write-Log "Stopped Python process: `$(`$_.Id)"
-}
-
-# Stop frontend (Node)
-Get-Process -Name 'node' -ErrorAction SilentlyContinue | ForEach-Object {
-    `$_ | Stop-Process -Force  
-    Write-Log "Stopped Node process: `$(`$_.Id)"
-}
-
-Start-Sleep -Seconds 3
-
-# Restart services
-Write-Log "Restarting services..."
-& '$startupScriptPath'
-
-Write-Log "Restart complete"
-"@
-
+    # Create restart script from template
     $restartScriptPath = Join-Path $AppPath "service_restart.ps1"
+    $restartScript = (Get-Content (Join-Path $AppPath "scripts\service_restart_template.ps1") -Raw).Replace('APPPATH', $AppPath).Replace('LOGPATH', $LogPath).Replace('STARTUPSCRIPTPATH', $startupScriptPath)
     Set-Content -Path $restartScriptPath -Value $restartScript -Force
     
-    # Create monitor script
-    $monitorScript = @"
-# AK Legal Vault - Health Monitor
-`$ErrorActionPreference = 'SilentlyContinue'
-`$AppPath = '$AppPath'
-`$LogPath = '$LogPath'
-
-function Write-Log {
-    param([string]`$Message)
-    `$timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    Add-Content -Path (Join-Path `$LogPath 'monitor.log') -Value "[`$timestamp] `$Message"
-}
-
-# Check if backend is running
-`$backendRunning = `$false
-try {
-    `$response = Invoke-RestMethod -Uri 'http://localhost:5000/health' -TimeoutSec 10
-    if (`$response.status -eq 'healthy') {
-        `$backendRunning = `$true
-    }
-} catch {
-    `$backendRunning = `$false
-}
-
-# Check if frontend is running  
-`$frontendRunning = `$false
-try {
-    `$response = Invoke-WebRequest -Uri 'http://localhost:3000' -TimeoutSec 10 -UseBasicParsing
-    if (`$response.StatusCode -eq 200) {
-        `$frontendRunning = `$true
-    }
-} catch {
-    `$frontendRunning = `$false
-}
-
-# Restart if needed
-if (-not `$backendRunning -or -not `$frontendRunning) {
-    Write-Log "Service down detected - Backend: `$backendRunning, Frontend: `$frontendRunning"
-    Write-Log "Initiating automatic recovery..."
-    & '$restartScriptPath'
-}
-"@
-
+    # Create monitor script from template
     $monitorScriptPath = Join-Path $AppPath "service_monitor.ps1"
+    $monitorScript = (Get-Content (Join-Path $AppPath "scripts\service_monitor_template.ps1") -Raw).Replace('APPPATH', $AppPath).Replace('LOGPATH', $LogPath).Replace('RESTARTSCRIPTPATH', $restartScriptPath)
     Set-Content -Path $monitorScriptPath -Value $monitorScript -Force
     
     Write-Info "Creating scheduled tasks..."
@@ -291,40 +180,53 @@ if (-not `$backendRunning -or -not `$frontendRunning) {
     Unregister-ScheduledTask -TaskName $RestartTaskName -Confirm:$false -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $MonitorTaskName -Confirm:$false -ErrorAction SilentlyContinue
     
-    # Create Auto-Start Task (runs at system startup)
+    # Create Auto-Start Task - default: At boot (if PC is on, system is on)
     $startupAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$startupScriptPath`""
-    $startupTrigger = New-ScheduledTaskTrigger -AtStartup
-    $startupSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RunOnlyIfNetworkAvailable
-    $startupPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    if ($AtLogon) {
+        $startupTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        $startupPrincipal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+        $startupDesc = "Starts AK Legal Vault when user logs in"
+    } else {
+        $startupTrigger = New-ScheduledTaskTrigger -AtStartup
+        $startupPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        $startupDesc = "Starts AK Legal Vault when Windows boots"
+    }
+    $startupSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
     
-    Register-ScheduledTask -TaskName $StartupTaskName -Action $startupAction -Trigger $startupTrigger -Settings $startupSettings -Principal $startupPrincipal -Description "Starts AK Legal Vault on system boot" -Force | Out-Null
-    Write-Success "  ✓ Auto-start task created"
+    Register-ScheduledTask -TaskName $StartupTaskName -Action $startupAction -Trigger $startupTrigger -Settings $startupSettings -Principal $startupPrincipal -Description $startupDesc -Force | Out-Null
+    Write-Success "  [OK] Auto-start task created"
     
     # Create Midnight Restart Task
     $restartAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$restartScriptPath`""
     $restartTrigger = New-ScheduledTaskTrigger -Daily -At "12:00 AM"
     $restartSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-    $restartPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    $restartPrincipal = if ($AtLogon) { New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited } else { New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest }
     
     Register-ScheduledTask -TaskName $RestartTaskName -Action $restartAction -Trigger $restartTrigger -Settings $restartSettings -Principal $restartPrincipal -Description "Restarts AK Legal Vault daily at midnight" -Force | Out-Null
-    Write-Success "  ✓ Midnight restart task created"
+    Write-Success "  [OK] Midnight restart task created"
     
-    # Create Health Monitor Task (every 5 minutes)
+    # Create Health Monitor Task (every 3 minutes - faster recovery)
     $monitorAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$monitorScriptPath`""
-    $monitorTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration ([TimeSpan]::MaxValue)
+    $monitorTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 3) -RepetitionDuration (New-TimeSpan -Days 365)
     $monitorSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-    $monitorPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    $monitorPrincipal = if ($AtLogon) { New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited } else { New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest }
     
     Register-ScheduledTask -TaskName $MonitorTaskName -Action $monitorAction -Trigger $monitorTrigger -Settings $monitorSettings -Principal $monitorPrincipal -Description "Monitors AK Legal Vault health and auto-recovers" -Force | Out-Null
-    Write-Success "  ✓ Health monitor task created"
+    Write-Success "  [OK] Health monitor task created"
     
     Write-Host ""
     Write-Success "Installation complete!"
     Write-Host ""
     Write-Host "  The system is now configured to:" -ForegroundColor Cyan
-    Write-Host "    • Start automatically when Windows boots" -ForegroundColor White
-    Write-Host "    • Restart every night at midnight" -ForegroundColor White
-    Write-Host "    • Auto-recover if services crash" -ForegroundColor White
+    if ($AtLogon) {
+        Write-Host "    - Start when you log in" -ForegroundColor White
+    } else {
+        Write-Host "    - Start when Windows boots (if PC is on, system is on)" -ForegroundColor White
+    }
+    Write-Host "    - Restart every night at midnight" -ForegroundColor White
+    Write-Host "    - Auto-recover if services crash (every 3 min)" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  Note: Use -AtLogon to start only when you log in" -ForegroundColor DarkGray
     Write-Host ""
     
     # Start services now
@@ -340,13 +242,10 @@ function Uninstall-Services {
     Write-Warning "Uninstalling AK Legal Vault services..."
     Write-Host ""
     
-    # Stop running processes
+    # Stop running processes (use Win32_Process - CommandLine not on Get-Process)
     Write-Info "Stopping running processes..."
-    Get-Process -Name 'python' -ErrorAction SilentlyContinue | Where-Object { 
-        $_.CommandLine -like '*uvicorn*' -or $_.CommandLine -like '*server.main*' 
-    } | Stop-Process -Force
-    
-    Get-Process -Name 'node' -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-CimInstance Win32_Process -Filter "name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*uvicorn*' -or $_.CommandLine -like '*server.main*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Get-CimInstance Win32_Process -Filter "name='node.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*vite*' -or $_.CommandLine -like '*npm*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     
     # Remove scheduled tasks
     Write-Info "Removing scheduled tasks..."
@@ -388,7 +287,7 @@ if ($Status) {
 }
 
 Write-Host ""
-Write-Host "  ─────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+Write-Host "  ---------------------------------------------------------" -ForegroundColor DarkGray
 Write-Host "  Powered by LexTech Systems" -ForegroundColor DarkGray
 Write-Host ""
 

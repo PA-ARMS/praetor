@@ -1,9 +1,15 @@
 import React from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 /**
- * LegalResponseFormatter - Parses and formats the structured 10-box response
- * into a legal document appearance with proper spacing and typography
+ * LegalResponseFormatter - Research memos (Markdown ##), legacy 10-box, or plain text.
  */
+function looksLikeMarkdownMemo(text) {
+  if (!text || typeof text !== 'string') return false
+  return /^##\s+\S/m.test(text) || /^###\s+\S/m.test(text)
+}
+
 function LegalResponseFormatter({ text }) {
   if (!text) return null
 
@@ -134,6 +140,15 @@ function LegalResponseFormatter({ text }) {
     .replace(/\[Insert\s+[^\]]+\]/gi, '') // Remove any other [Insert X] patterns
 
   const sections = parseStructuredResponse(cleanedText)
+
+  // Firm-style research memo (Markdown headings from backend prompt)
+  if (looksLikeMarkdownMemo(cleanedText)) {
+    return (
+      <div className="legal-response research-memo-md">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleanedText}</ReactMarkdown>
+      </div>
+    )
+  }
 
   // If parsing didn't find structure, render as plain text with improved spacing
   if (!sections || sections.length === 0) {

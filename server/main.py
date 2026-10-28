@@ -11,7 +11,6 @@ Key Components:
 - Guardrails middleware to enforce AI Laws
 - Multiple route modules for different features
 - Database initialization
-- TTS service preloading
 """
 import os
 from fastapi import FastAPI
@@ -26,8 +25,9 @@ from dotenv import load_dotenv
 # This must be done BEFORE importing config so the .env file is loaded
 load_dotenv()
 
-# Import all route modules - these handle API endpoints
-from server.routes import chat, forms, documents, rag, auth, tts, audit, corrections, user_knowledge, monitoring, system, reviews
+# Import route modules for core features only: auth, chat, documents, rag, system
+# See docs/REMOVED_FEATURES.md for re-enabling forms, audit, corrections, matters, scenarios, etc.
+from server.routes import chat, documents, rag, auth, system
 # Import middleware for AI Laws enforcement
 from server.middleware.guardrails_middleware import GuardrailsMiddleware
 # Import rate limiting middleware
@@ -87,51 +87,41 @@ async def lifespan(app: FastAPI):
     # await knowledge_builder.start()
     
     logger.info(f"Ollama Model: {settings.OLLAMA_MODEL}")
+    logger.info(f"Ollama num_gpu: {settings.OLLAMA_NUM_GPU} (0=CPU, -1=full GPU, >0=split)")
     logger.info(f"RAG Database: {settings.CHROMA_DB_PATH}")
 
-    # Configure eSpeak NG PATH for Coqui TTS on Windows
-    # Coqui TTS requires eSpeak NG for phoneme generation, but Windows doesn't
-    # always have it in PATH. We search common installation locations and add them.
-    try:
-        import platform, os
-        if platform.system().lower().startswith("win"):
-            espeak_candidates = [
-                r"C:\Program Files\eSpeak NG",
-                r"C:\Program Files (x86)\eSpeak NG",
-            ]
-            current_path = os.environ.get("PATH", "")
-            for p in espeak_candidates:
-                if os.path.isdir(p) and p not in current_path:
-                    os.environ["PATH"] = current_path + os.pathsep + p
-                    current_path = os.environ["PATH"]
-            logger.debug("TTS PATH configured for eSpeak NG")
-    except Exception as e:
-        logger.warning(f"Could not adjust PATH for eSpeak NG: {e}")
-    
     # Initialize SQLite database
     # This creates all tables defined in models.py if they don't exist
     logger.info("Initializing database...")
     init_db()
     logger.info("Database initialized.")
-    
-    # Preload TTS service (optional but recommended)
-    # Preloading downloads/loads the TTS model at startup so the first
-    # text-to-speech request is faster. If TTS fails, the app continues without it.
+
+    # Ollama is required for chat; warn loudly if it is not up (common when only uvicorn is started from the IDE).
     try:
-        if settings.TTS_ENABLED:
-            from server.services.tts_service import get_tts_service
-            svc = get_tts_service()
-            # Only initialize if not already done (prevents duplicate initialization)
-            if not svc.initialized:
-                logger.info("Preloading TTS model...")
-                # Use configured model or default to high-quality VCTK model
-                svc.initialize(model_name=settings.TTS_MODEL or "tts_models/en/vctk/vits",
-                               voice_name=(settings.TTS_VOICE or None))
-                logger.info("TTS preloaded.")
+        import httpx
+        base = settings.OLLAMA_BASE_URL.rstrip("/")
+        async with httpx.AsyncClient(timeout=4.0) as oclient:
+            r = await oclient.get(f"{base}/api/tags")
+            if r.status_code == 200:
+                logger.info(f"[OK] Ollama reachable at {base}")
+            else:
+                logger.warning(
+                    "Ollama returned HTTP %s at %s — chat may fail until Ollama is healthy.",
+                    r.status_code,
+                    base,
+                )
     except Exception as e:
-        # TTS is optional - log warning but don't fail startup
-        logger.warning(f"TTS service not available or failed to initialize: {e}")
-    
+        logger.warning(
+            "%s\nOLLAMA NOT REACHABLE at %s (%s).\n"
+            "Chat will fail until Ollama is running on port 11434.\n"
+            "Fix: from the LAWFIRMAI folder run RESTART_EVERYTHING.bat, or START_OLLAMA_GPU.bat (keep open) then START_BACKEND.bat.\n"
+            "Do not rely on starting only uvicorn from the IDE without Ollama.\n%s",
+            "=" * 72,
+            settings.OLLAMA_BASE_URL,
+            e,
+            "=" * 72,
+        )
+
     # Yield control to FastAPI - app is now running
     yield
     
@@ -146,7 +136,9 @@ app = FastAPI(
     title="Virginia Legal AI",
     description="Local AI-powered legal research and form generation system",
     version="1.0.0",
-    lifespan=lifespan  # Register lifespan manager for startup/shutdown
+    lifespan=lifespan,  # Register lifespan manager for startup/shutdown
+    # Increase request body size limit to 10MB for large legal documents/questions
+    # This allows for very long messages (up to 5MB text + overhead)
 )
 
 # === MIDDLEWARE SETUP ===
@@ -199,8 +191,31 @@ async def app_error_handler(request, exc: AppError):
 async def validation_error_handler(request, exc: RequestValidationError):
     """Handle validation errors"""
     from server.utils.error_handler import create_error_response
+    from server.utils.logger import setup_logger
+    import json
+    logger = setup_logger("main")
+    
+    # Log the validation errors for debugging
+    errors = exc.errors()
+    logger.warning(f"Validation error: {json.dumps(errors, indent=2)}")
+    
+    # Try to get the request body for debugging
+    try:
+        body = await request.body()
+        logger.warning(f"Request body: {body[:500]}")  # First 500 chars
+    except Exception as e:
+        logger.warning(f"Could not read request body: {e}")
+    
+    # Return more detailed error message
+    error_details = []
+    for error in errors:
+        field = ".".join(str(loc) for loc in error.get("loc", []))
+        msg = error.get("msg", "Invalid value")
+        error_type = error.get("type", "unknown")
+        error_details.append(f"{field}: {msg} (type: {error_type})")
+    
     return create_error_response(
-        "Invalid request. Please check your input and try again.",
+        f"Invalid request: {', '.join(error_details)}",
         status_code=400
     )
 
@@ -219,61 +234,19 @@ app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 # Chat routes - main legal research query endpoint
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 
-# Forms routes - legal form generation and management
-app.include_router(forms.router, prefix="/api/forms", tags=["forms"])
-
 # Documents routes - document management and storage
 app.include_router(documents.router, prefix="/api/documents", tags=["documents"])
 
-# RAG routes - document upload, search, and retrieval
+# RAG routes - document upload, search, and retrieval (document reading/understanding)
 app.include_router(rag.router, prefix="/api/rag", tags=["rag"])
 
-# TTS routes - text-to-speech functionality
-app.include_router(tts.router, prefix="/api/tts", tags=["tts"])
-
-# Audit routes - audit log viewing (admin/attorney only)
-app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
-
-# Monitoring routes - system health and statistics (admin/attorney only)
-app.include_router(monitoring.router, prefix="/api/monitoring", tags=["monitoring"])
-
-# System routes - system status and stats
+# System routes - system status and health
 app.include_router(system.router, prefix="/api/system", tags=["system"])
 
-# Corrections routes - user feedback and correction system
-app.include_router(corrections.router, tags=["corrections"])
-
-# User Knowledge routes - user-provided legal knowledge library
-app.include_router(user_knowledge.router, tags=["user-knowledge"])
-
-# Reviews routes - senior partner review system for AI responses
-app.include_router(reviews.router, prefix="/api/reviews", tags=["reviews"])
-
-# Scenario routes - predictive case outcome analysis (optional feature)
-# Only enabled if SCENARIO_DB_ENABLED environment variable is set to "True"
-# This feature requires downloading and processing legal cases
-logger.info(f"Checking SCENARIO_DB_ENABLED: value={settings.SCENARIO_DB_ENABLED}, type={type(settings.SCENARIO_DB_ENABLED)}")
-logger.info(f"Environment variable SCENARIO_DB_ENABLED: {os.getenv('SCENARIO_DB_ENABLED', 'NOT SET')}")
-if settings.SCENARIO_DB_ENABLED:
-    try:
-        from server.routes import scenarios
-        app.include_router(scenarios.router, prefix="/api/scenarios", tags=["scenarios"])
-        logger.info("[OK] Scenario database features enabled")
-    except Exception as e:
-        logger.warning(f"Could not load scenario routes: {e}")
-        import traceback
-        logger.warning(traceback.format_exc())
-else:
-    logger.info("[INFO] Scenario database features disabled (set SCENARIO_DB_ENABLED=True to enable)")
-
-# Validation routes - prediction validation and error analysis (optional feature)
-# Used for testing AI accuracy and learning from mistakes
-try:
-    from server.routes import validation
-    app.include_router(validation.router, prefix="/api/validation", tags=["validation"])
-    logger.info("[OK] Validation and error analysis features enabled")
-except Exception as e:
-    logger.warning(f"Could not load validation routes: {e}")
+# === OPTIONAL FEATURES (disabled for simplified build) ===
+# To re-enable, add the import and include_router() above. See docs/REMOVED_FEATURES.md.
+# - forms, audit, monitoring, corrections, user_knowledge, reviews, matters
+# - scenarios (conditional on SCENARIO_DB_ENABLED), validation
 
 
 # === ROOT ENDPOINTS ===
@@ -291,26 +264,20 @@ async def root():
     }
 
 
-@app.get("/health")
-async def health():
-    """
-    Health check endpoint
-    Used by monitoring systems and load balancers to verify server is healthy
-    Returns detailed health status including database, Ollama, and ChromaDB connectivity
-    """
+async def _health_response():
+    """Build health check response (database, Ollama, ChromaDB, disk). Used by /health and /api/health."""
     from sqlalchemy import text
     from pathlib import Path
     import shutil
     import requests
-    
+
     checks = {
         "database": False,
         "ollama": False,
         "chromadb": False,
         "disk_space": False
     }
-    
-    # Check database connectivity
+
     try:
         from server.models import get_db
         db = next(get_db())
@@ -319,24 +286,21 @@ async def health():
         db.close()
     except Exception as e:
         logger.warning(f"Database health check failed: {e}")
-    
-    # Check Ollama service
+
     try:
         response = requests.get(f"{settings.OLLAMA_BASE_URL}/api/tags", timeout=2)
         if response.status_code == 200:
             checks["ollama"] = True
     except Exception as e:
         logger.warning(f"Ollama health check failed: {e}")
-    
-    # Check ChromaDB
+
     try:
         chroma_path = Path(settings.CHROMA_DB_PATH)
         if chroma_path.exists() and chroma_path.is_dir():
             checks["chromadb"] = True
     except Exception as e:
         logger.warning(f"ChromaDB health check failed: {e}")
-    
-    # Check disk space (at least 1GB free)
+
     try:
         data_dir = Path(settings.DATA_DIR)
         if data_dir.exists():
@@ -346,22 +310,49 @@ async def health():
             checks["disk_free_gb"] = round(free_gb, 2)
     except Exception as e:
         logger.warning(f"Disk space check failed: {e}")
-    
-    # Overall status
+
     all_healthy = all([
         checks["database"],
         checks["ollama"],
         checks["chromadb"],
         checks["disk_space"]
     ])
-    
     status = "healthy" if all_healthy else "degraded"
-    
     return {
         "status": status,
         "checks": checks,
         "timestamp": datetime.now().isoformat()
     }
+
+
+@app.get("/ping")
+async def ping_root():
+    """Liveness only — no DB/Ollama/Chroma. Use for quick port/process checks."""
+    return {"ok": True}
+
+
+@app.get("/api/ping")
+async def ping_api():
+    """Same as GET /ping; proxy-friendly."""
+    return {"ok": True}
+
+
+@app.get("/health")
+async def health():
+    """
+    Health check endpoint.
+    Used by monitoring and load balancers. Returns database, Ollama, ChromaDB, disk status.
+    """
+    return await _health_response()
+
+
+@app.get("/api/health")
+async def api_health():
+    """
+    Health check at /api/health for frontend (AdminDashboard, Login) and proxy-friendly URLs.
+    Same response as /health.
+    """
+    return await _health_response()
 
 
 # === SERVER STARTUP ===

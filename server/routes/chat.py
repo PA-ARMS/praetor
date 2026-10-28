@@ -2,7 +2,7 @@
 Chat API routes - Legal research queries
 """
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, Field
 from typing import Optional, List, Dict
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +14,7 @@ from server.services.ollama_service import ollama_service
 from server.services.rag_service import rag_service
 from server.services.guardrails_service import guardrails_service
 from server.services.scotus_service import scotus_service
+from server.services.semantic_cache_service import semantic_cache_service
 from server.services.live_legal_lookup_service import live_legal_lookup_service
 from server.config import settings
 import re
@@ -97,10 +98,127 @@ def _load_source_catalog() -> Dict[str, dict]:
         return _SOURCE_CATALOG_CACHE
 
 
-def _want_live_lookup(request: "ChatRequest") -> bool:
-    if getattr(request, "use_web", None) is False:
+class ChatRequest(BaseModel):
+    message: str
+    conversation_id: Optional[str] = None
+    use_rag: bool = True
+    max_results: int = 0  # 0 means no limit - return all relevant results
+    doc_sources: Optional[List[str]] = None
+    # Raw text from upload API (same turn); bypasses flaky vector lookup for chat context
+    attachment_extracted_text: Optional[str] = Field(default=None, max_length=150000)
+    include_scenario_analysis: Optional[bool] = None  # Auto-detect if None
+    detail_level: Optional[str] = None  # "summary", "standard", "comprehensive", "complete", "unlimited", or None for auto
+    exhaustive_search: bool = False  # Enable exhaustive trial prep mode (500+ sources)
+    max_output_tokens: Optional[int] = None  # Override token limit
+    skip_clarification: bool = False  # When True, answer with best effort even if clarification would normally be asked
+    response_format: Optional[str] = None  # "memo" | "conversational" | None (auto: memo for legal/mixed)
+    use_web: Optional[bool] = None  # Live official-source lookup; None = use server default
+    
+    # Pydantic v2 configuration
+    model_config = {
+        "from_attributes": True,  # Allow ORM mode
+        "str_strip_whitespace": True,  # Automatically strip whitespace from strings
+    }
+    
+    @field_validator('message')
+    def validate_message(cls, v):
+        """Validate message length and content"""
+        if not v:
+            raise ValueError("Message cannot be empty")
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("Message cannot be empty")
+        MAX_MESSAGE_LENGTH = 50000  # Prevent abuse; long legal queries still allowed
+        if len(stripped) > MAX_MESSAGE_LENGTH:
+            raise ValueError(f"Message must be {MAX_MESSAGE_LENGTH:,} characters or fewer")
+        return stripped
+    
+    @field_validator('conversation_id')
+    def validate_conversation_id(cls, v):
+        """Validate conversation ID format"""
+        if v and len(v) > 200:
+            raise ValueError("Conversation ID too long")
+        return v
+    
+    @field_validator('max_results', mode='before')
+    @classmethod
+    def validate_max_results(cls, v):
+        """Coerce max_results to int if it's a string"""
+        if v is None:
+            return 0
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return 0  # Default to 0 if conversion fails
+    
+    @field_validator('exhaustive_search', mode='before')
+    @classmethod
+    def validate_exhaustive_search(cls, v):
+        """Coerce exhaustive_search to bool"""
+        if v is None:
+            return False
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.lower() in ('true', '1', 'yes', 'on')
+        return bool(v)
+    
+    @field_validator('use_rag', mode='before')
+    @classmethod
+    def validate_use_rag(cls, v):
+        """Coerce use_rag to bool"""
+        if v is None:
+            return True  # Default to True
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.lower() in ('true', '1', 'yes', 'on')
+        return bool(v)
+
+    @field_validator('use_web', mode='before')
+    @classmethod
+    def validate_use_web(cls, v):
+        if v is None or v == "":
+            return None
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.lower() in ('true', '1', 'yes', 'on')
+        return bool(v)
+    
+    @field_validator('max_output_tokens', mode='before')
+    @classmethod
+    def validate_max_output_tokens(cls, v):
+        """Coerce max_output_tokens to int if it's a string"""
+        if v is None:
+            return None
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return None  # Return None if conversion fails
+
+
+def _effective_response_format(request: ChatRequest, intent_mode: str) -> str:
+    """
+    Firm default: research memo for legal/mixed; conversational for general.
+    Explicit request.response_format overrides when set.
+    """
+    raw = getattr(request, "response_format", None)
+    if raw is not None and str(raw).strip():
+        v = str(raw).strip().lower()
+        if v in ("memo", "research_memo", "firm", "legal_memo"):
+            return "research_memo"
+        if v in ("conversational", "chat", "plain"):
+            return "conversational"
+    if intent_mode in ("legal", "mixed"):
+        return "research_memo"
+    return "conversational"
+
+
+def _want_live_lookup(request: ChatRequest) -> bool:
+    if request.use_web is False:
         return False
-    if getattr(request, "use_web", None) is True:
+    if request.use_web is True:
         return bool(getattr(settings, "LIVE_LEGAL_LOOKUP_ENABLED", True))
     return bool(getattr(settings, "LIVE_LEGAL_LOOKUP_ENABLED", True))
 
@@ -131,35 +249,6 @@ async def _merge_live_official_sources(query: str, sources_raw: List[Dict], warn
     return added
 
 
-class ChatRequest(BaseModel):
-    message: str
-    conversation_id: Optional[str] = None
-    use_rag: bool = True
-    max_results: int = 0  # 0 means no limit - return all relevant results
-    doc_sources: Optional[List[str]] = None
-    include_scenario_analysis: Optional[bool] = None  # Auto-detect if None
-    detail_level: Optional[str] = None  # "summary", "standard", "comprehensive", "complete", "unlimited", or None for auto
-    exhaustive_search: bool = False  # Enable exhaustive trial prep mode (500+ sources)
-    max_output_tokens: Optional[int] = None  # Override token limit
-    use_web: Optional[bool] = None  # Live official-source lookup; None = use server default
-    
-    @field_validator('message')
-    def validate_message(cls, v):
-        """Validate message length and content"""
-        if not v or not v.strip():
-            raise ValueError("Message cannot be empty")
-        if len(v) > 10000:  # 10KB max message length
-            raise ValueError("Message too long. Maximum 10,000 characters.")
-        return v.strip()
-    
-    @field_validator('conversation_id')
-    def validate_conversation_id(cls, v):
-        """Validate conversation ID format"""
-        if v and len(v) > 200:
-            raise ValueError("Conversation ID too long")
-        return v
-
-
 class ChatResponse(BaseModel):
     response: str
     sources: List[dict]
@@ -179,6 +268,10 @@ class ChatResponse(BaseModel):
     conflict_messages: Optional[List[str]] = None  # High-level conflict / verification messages
     search_total_results: Optional[int] = None  # Total raw RAG hits
     search_unique_sources: Optional[int] = None  # Unique source groups in RAG
+    clarification_only: bool = False  # True when AI returned only clarification questions (clarify-first)
+    clarification_questions: Optional[List[str]] = None  # Raw questions for UI display
+    semantic_cache_hit: bool = False  # True when answer was reused from semantic similarity cache
+    response_format: Optional[str] = None  # "research_memo" or "conversational" — how the answer was structured
 
 
 class ChatHistoryResponse(BaseModel):
@@ -200,6 +293,695 @@ class ChatHistoryResponse(BaseModel):
 class ChatHistoryListResponse(BaseModel):
     messages: List[ChatHistoryResponse]
     total: int
+
+
+_LEGAL_FILENAME_MARKERS = frozenset(
+    (
+        "motion",
+        "nonsuit",
+        "dismiss",
+        "complaint",
+        "answer",
+        "exhibit",
+        "brief",
+        "pleading",
+        "discovery",
+        "subpoena",
+        "judgment",
+        "memorandum",
+        "response",
+        "opposition",
+        "demurrer",
+        "petition",
+        "hearing",
+        "deposition",
+        "court",
+        "docket",
+        "case no",
+        "case no.",
+    )
+)
+
+
+def _filenames_suggest_legal_filings(sources: Optional[List[str]]) -> bool:
+    if not sources:
+        return False
+    for name in sources:
+        low = (name or "").lower()
+        if any(m in low for m in _LEGAL_FILENAME_MARKERS):
+            return True
+    return False
+
+
+def _legal_attachment_orientation_block(names: Optional[List[str]]) -> str:
+    """Reduce wrong-domain answers when exhibit OCR dominates the first pages."""
+    if not names or not _filenames_suggest_legal_filings(names):
+        return ""
+    joined = ", ".join(names)
+    return (
+        "ORIENTATION (from filenames): These uploads look like litigation or court-related filings (motions, responses, exhibits, etc.). "
+        "Treat the body text as part of that package. Exhibits often include scans, forms, or figures whose OCR can resemble unrelated domains—do NOT relabel the whole filing as an electronics schematic unless the user explicitly asks about circuits.\n"
+        f"Filenames: {joined}\n\n"
+    )
+
+
+_CODE_LIKE_EXTENSIONS = (
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".cs",
+    ".go",
+    ".rs",
+    ".asm",
+    ".s",
+)
+
+
+def _sources_look_like_source_code_files(sources: Optional[List[str]]) -> bool:
+    if not sources:
+        return False
+    for n in sources:
+        low = (n or "").lower()
+        if any(low.endswith(ext) for ext in _CODE_LIKE_EXTENSIONS):
+            return True
+    return False
+
+
+def _window_attachment_text_for_llm(s: str, cap: int) -> str:
+    """When over cap, send head+mid+tail so opening exhibit OCR is not the only signal."""
+    if not s or len(s) <= cap:
+        return s
+    sep = "\n\n[... long attachment omitted; middle section ...]\n\n"
+    sep2 = "\n\n[... long attachment omitted ...]\n\n"
+    overhead = len(sep) + len(sep2)
+    inner = max(900, cap - overhead)
+    third = inner // 3
+    if third < 150:
+        return s[:cap]
+    head = s[:third]
+    mid_start = max(0, len(s) // 2 - third // 2)
+    mid = s[mid_start : mid_start + third]
+    tail = s[-third:]
+    out = head + sep + mid + sep2 + tail
+    if len(out) > cap:
+        drop = len(out) - cap + 8
+        shrink = min(drop // 3, third - 120)
+        if shrink > 0:
+            third2 = third - shrink
+            head = s[:third2]
+            mid = s[mid_start : mid_start + third2]
+            tail = s[-third2:]
+            out = head + sep + mid + sep2 + tail
+    if len(out) > cap:
+        out = out[:cap]
+    return out
+
+
+def _attachment_head_misleading_non_prose(text: str, sample: int = 24000) -> bool:
+    """
+    Heuristic: OCR / PDF-artifact blobs often look like random identifiers; models call that 'code'.
+    """
+    s = (text or "")[:sample]
+    if len(s) < 1200:
+        return False
+    low = s.lower()
+    legal_cues = (
+        " court",
+        "plaintiff",
+        "defendant",
+        " motion",
+        "exhibit",
+        " vs.",
+        " v.",
+        "case no",
+        "hereby",
+        "whereas",
+        "paragraph",
+        "petitioner",
+        "respondent",
+        "summary judgment",
+        "signature",
+        "subscribed",
+        "sworn",
+    )
+    legal_hits = sum(low.count(c) for c in legal_cues)
+    if legal_hits >= 5:
+        return False
+    glue = (" the ", " and ", " that ", " for ", " with ", " you ", " not ", " this ", " are ")
+    glue_hits = sum(low.count(g) for g in glue)
+    if legal_hits >= 2 and glue_hits >= 30:
+        return False
+    if glue_hits >= 60:
+        return False
+    letters = sum(1 for c in s if c.isalpha())
+    if letters < 400:
+        return False
+    alpha_ratio = letters / max(1, len(s))
+    if alpha_ratio < 0.38:
+        return True
+    tokens = re.findall(r"[A-Za-z]{4,}", s)
+    if len(tokens) < 40:
+        return False
+
+    def _gibber_tok(tok: str) -> bool:
+        t = tok.upper()
+        vow = sum(1 for c in t if c in "AEIOUY")
+        if len(t) >= 4 and vow == 0:
+            return True
+        if len(t) >= 5 and vow <= 1 and re.match(r"^[A-Z0-9]{4,}[A-Z0-9]*$", t):
+            return True
+        return False
+
+    gib = sum(1 for t in tokens if _gibber_tok(t))
+    ratio = gib / len(tokens)
+    if ratio > 0.22:
+        return True
+    if glue_hits < 12 and ratio > 0.12:
+        return True
+    return False
+
+
+def _ocr_attachment_guard_instruction(text: str, doc_sources: Optional[List[str]]) -> str:
+    if not (text or "").strip():
+        return ""
+    if _sources_look_like_source_code_files(doc_sources):
+        return ""
+    if _filenames_suggest_legal_filings(doc_sources) or _attachment_head_misleading_non_prose(text):
+        return (
+            "QUALITY NOTE FOR THIS EXTRACTION: The text may come from a scan or PDF and can include OCR noise, "
+            "font-encoding glitches, or non-text stream artifacts. It is almost certainly NOT a programming language. "
+            "Unless every line unmistakably looks like real source code for one language (e.g. consistent Python/Java "
+            "syntax with imports), do NOT describe it as code with functions, recursion, or control flow. Summarize as "
+            "ordinary document text when possible: headings, parties, procedural labels, dates, relief requested, and "
+            "readable sentences. If long stretches are nonsensical tokens, say that plainly and report only what is readable.\n\n"
+        )
+    return ""
+
+
+# ---- Minimal chat (rebuild): one path, easy to extend ----
+@router.post("/simple", response_model=ChatResponse)
+async def chat_simple(
+    request: ChatRequest,
+    current_user: User = Depends(require_auth),
+    db: Session = Depends(get_db)
+):
+    """Minimal chat: RAG → prompt → Ollama → save → return. Use this for a reliable baseline."""
+    from server.utils.logger import setup_logger
+    from server.config import settings
+    logger = setup_logger("chat")
+    logger.info(f"[Chat/simple] user {current_user.id}: {request.message[:80]}...")
+    t0 = time.time()
+
+    conversation_id = request.conversation_id or f"conv_{current_user.id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    warnings: List[str] = []
+
+    try:
+        attachment_raw = (getattr(request, "attachment_extracted_text", None) or "").strip()
+        _attach_llm_cap = 48_000  # keep within typical local LLM context (avoid empty/no-op generations)
+        attachment_truncated_for_llm = False
+        attachment_extracted_text = attachment_raw
+        if len(attachment_extracted_text) > _attach_llm_cap:
+            attachment_extracted_text = _window_attachment_text_for_llm(
+                attachment_extracted_text, _attach_llm_cap
+            )
+            attachment_truncated_for_llm = True
+        has_inline_text = bool(attachment_raw)
+        if attachment_truncated_for_llm:
+            warnings.append(
+                "Long attachment: the AI received a head/middle/tail sample of the text (not only the opening pages), "
+                "due to context limits. Ask about a specific section if something is missing."
+            )
+        has_doc_sources = bool(request.doc_sources)
+        has_attachment_turn = has_doc_sources or has_inline_text
+        intent_mode = guardrails_service.detect_query_intent(request.message)
+        if intent_mode == "general":
+            q_lower = request.message.lower()
+            if ("virginia" in q_lower or " va " in f" {q_lower} ") and any(
+                t in q_lower
+                for t in (
+                    "law", "legislat", "statute", "code", "effective", "july",
+                    "session", "bill", "assembly", "policy", "enact", "change",
+                )
+            ):
+                intent_mode = "legal"
+        # Attachments (filenames and/or inline extracted text): always retrieve / inject context
+        corpus_busy = _corpus_update_in_progress()
+        if corpus_busy:
+            warnings.append(
+                "Virginia Code index is rebuilding in the background. Statute search may be slow or "
+                "unavailable; answers may rely on attachments and general knowledge until indexing completes."
+            )
+        effective_use_rag = bool(
+            request.use_rag
+            and (intent_mode in ("legal", "mixed") or has_attachment_turn)
+        )
+        if corpus_busy and request.use_rag:
+            warnings.append(
+                "Virginia Code index may be rebuilding; search results could be partial until UPDATE_VA_LAWS.bat completes."
+            )
+
+        effective_fmt = _effective_response_format(request, intent_mode)
+        session_law_query = guardrails_service.is_session_law_query(request.message)
+        effective_year = guardrails_service.parse_effective_year(request.message)
+
+        enhanced_for_cache = guardrails_service.enhance_prompt(request.message)
+        want_live = _want_live_lookup(request)
+        scope_simple = semantic_cache_service.scope_fingerprint(
+            effective_use_rag,
+            False,
+            "standard",
+            request.max_results,
+            request.doc_sources,
+            False,
+            effective_fmt,
+            extra=f"web:{want_live}:{datetime.now().date().isoformat()}",
+        )
+        prior_count = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.user_id == current_user.id)
+            .filter(ChatMessage.conversation_id == conversation_id)
+            .count()
+        )
+        is_first_simple = prior_count == 0
+        query_embedding_simple: Optional[List[float]] = None
+        # Never use semantic cache for attachment turns: cache has no document text and will
+        # return generic "can't access files" answers for similar questions.
+        if (
+            settings.SEMANTIC_CACHE_ENABLED
+            and is_first_simple
+            and effective_use_rag
+            and not has_attachment_turn
+        ):
+            try:
+                query_embedding_simple = await ollama_service.embed(enhanced_for_cache[:8000])
+                simple_hit = semantic_cache_service.find_best_match(
+                    db, current_user.id, query_embedding_simple, scope_simple, settings.OLLAMA_MODEL
+                )
+                if simple_hit:
+                    response_cached, formatted_cached, full_cached, warn_cached, extra = semantic_cache_service.deserialize_cached_response(
+                        simple_hit.row
+                    )
+                    if not guardrails_service.looks_like_generic_disclaimer(response_cached or ""):
+                        semantic_cache_service.record_hit(db, simple_hit.row.id)
+                        warnings = list(warn_cached or [])
+                        chat_message = ChatMessage(
+                            user_id=current_user.id,
+                            conversation_id=conversation_id,
+                            subject=None,
+                            message=request.message,
+                            response=response_cached,
+                            sources=json.dumps(formatted_cached),
+                            full_sources=json.dumps(full_cached),
+                            warnings=json.dumps(warnings),
+                        )
+                        db.add(chat_message)
+                        db.commit()
+                        db.refresh(chat_message)
+                        return ChatResponse(
+                            response=response_cached,
+                            sources=formatted_cached,
+                            conversation_id=conversation_id,
+                            timestamp=datetime.now().isoformat(),
+                            warnings=warnings,
+                            message_id=chat_message.id,
+                            semantic_cache_hit=True,
+                            response_format=(extra or {}).get("response_format") or effective_fmt,
+                        )
+                    logger.warning("[Chat/simple] semantic cache hit rejected (generic disclaimer)")
+            except Exception as ex:
+                logger.warning(f"[Chat/simple] semantic cache lookup failed: {ex}")
+
+        sources_raw: List[Dict] = []
+        upload_had_chunks = has_inline_text
+        if effective_use_rag:
+            seen_ids: set = set()
+            enhanced_q = guardrails_service.enhance_prompt(request.message)
+            if has_doc_sources and not has_inline_text:
+                try:
+                    upload_chunks = rag_service.get_chunks_for_sources(request.doc_sources, limit=80)
+                    if upload_chunks:
+                        upload_had_chunks = True
+                    for s in upload_chunks:
+                        sid = s.get("id")
+                        if sid not in seen_ids:
+                            seen_ids.add(sid)
+                            sources_raw.append(s)
+                    if not upload_chunks:
+                        warnings.append(
+                            "No indexed text was found for the attached filename(s). "
+                            "The upload may have failed, the PDF may be empty or image-only without OCR, or text extraction failed."
+                        )
+                        doc_hits = await rag_service.search(
+                            enhanced_q,
+                            n_results=30,
+                            filters={"source": {"$in": request.doc_sources}},
+                            use_synonyms=False,
+                        )
+                        if doc_hits:
+                            upload_had_chunks = True
+                        for s in doc_hits:
+                            sid = s.get("id")
+                            if sid not in seen_ids:
+                                seen_ids.add(sid)
+                                sources_raw.append(s)
+                        if not doc_hits:
+                            logger.info(
+                                "[Chat/simple] No chunks or vector hits for doc_sources=%s",
+                                request.doc_sources,
+                            )
+                except Exception as e:
+                    logger.warning(f"[Chat/simple] Uploaded-document retrieval failed: {e}")
+
+            # Do not mix Virginia statutes into context when the user attached a file but we
+            # recovered nothing—it misleads small models into saying they "can't access files".
+            # Inline attachment text is already large; blending many statutes blows the LLM window
+            # and can hide the user's question behind irrelevant context.
+            blend_statutes = (not has_attachment_turn) or (
+                has_attachment_turn
+                and upload_had_chunks
+                and intent_mode in ("legal", "mixed")
+                and not has_inline_text
+            )
+            if blend_statutes:
+                try:
+                    rag_n = int(getattr(settings, "CHAT_SIMPLE_N_RESULTS", 8) or 8)
+                    if session_law_query:
+                        rag_n = max(rag_n, 15)
+                    rag_start = time.time()
+                    if session_law_query:
+                        extra = await rag_service.search_legislative_effective_date(
+                            request.message, year=effective_year, n_results=rag_n
+                        )
+                    else:
+                        extra = await rag_service.search_fast(
+                            request.message, n_results=rag_n, use_synonyms=True
+                        )
+                    logger.info(
+                        f"[Chat/simple] RAG: {len(extra)} hits in {time.time() - rag_start:.2f}s "
+                        f"(session_law={session_law_query})"
+                    )
+                    for s in extra:
+                        sid = s.get("id")
+                        if sid not in seen_ids:
+                            seen_ids.add(sid)
+                            sources_raw.append(s)
+                except Exception as e:
+                    logger.warning(f"RAG failed: {e}")
+        live_added = 0
+        if want_live and intent_mode in ("legal", "mixed") and not has_inline_text:
+            live_added = await _merge_live_official_sources(request.message, sources_raw, warnings)
+        context_str = ""
+        snippet_len = int(getattr(settings, "CHAT_SIMPLE_SOURCE_SNIPPET_CHARS", 700) or 700)
+        max_ctx_sources = int(getattr(settings, "CHAT_SIMPLE_MAX_CONTEXT_SOURCES", 12) or 12)
+        if has_attachment_turn:
+            max_ctx_sources = min(max_ctx_sources + 4, 16)
+        if has_inline_text:
+            context_str = (
+                _legal_attachment_orientation_block(request.doc_sources)
+                + _ocr_attachment_guard_instruction(attachment_raw, request.doc_sources)
+                + "EXTRACTED TEXT FROM THE USER'S ATTACHED FILE(S) — this IS the document content; "
+                "answer using this material:\n\n"
+                + attachment_extracted_text
+            )
+            if sources_raw:
+                parts_sup = []
+                parts_sup.append(
+                    "IMPORTANT: Additional numbered excerpts below may include statutes or cases; "
+                    "for questions about the user's file, rely primarily on the attachment text above."
+                )
+                for i, s in enumerate(sources_raw[:max_ctx_sources], 1):
+                    meta = s.get("metadata") or {}
+                    parts_sup.append(
+                        f"[{i}] {meta.get('source', 'Unknown')} ({meta.get('jurisdiction', '')}) {meta.get('citation', '')}\n{(s.get('text') or '')[:snippet_len]}"
+                    )
+                context_str += "\n\n--- Additional retrieval ---\n\n" + "\n\n".join(parts_sup)
+        elif sources_raw:
+            parts = []
+            _ob = _legal_attachment_orientation_block(request.doc_sources)
+            if _ob.strip():
+                parts.append(_ob.rstrip())
+            if has_attachment_turn and upload_had_chunks:
+                parts.append(
+                    "IMPORTANT: The numbered excerpts below ARE text extracted from the user's attached file(s) "
+                    f"({', '.join(request.doc_sources or [])}). Describe and analyze THAT content. "
+                    "Do not say you cannot access uploads or lack file-sharing."
+                )
+            for i, s in enumerate(sources_raw[:max_ctx_sources], 1):
+                meta = s.get("metadata") or {}
+                parts.append(f"[{i}] {meta.get('source', 'Unknown')} ({meta.get('jurisdiction', '')}) {meta.get('citation', '')}\n{(s.get('text') or '')[:snippet_len]}")
+            context_str = "\n\n".join(parts)
+        else:
+            context_str = "No relevant documents found."
+
+        if intent_mode in ("legal", "mixed"):
+            system_prompt = guardrails_service.build_system_prompt(
+                is_first_message=True,
+                has_conversation_history=False,
+                user_name=current_user.full_name,
+                response_format=effective_fmt,
+            )
+            system_prompt += "\n\nUse ONLY the source excerpts above. Cite them. If none are relevant, say so."
+            if live_added:
+                system_prompt += (
+                    "\n\nSome excerpts are LIVE OFFICIAL FETCHES from law.lis.virginia.gov "
+                    "(or another allowlisted government site). Prefer those over older local-index text "
+                    "when they conflict. Label live fetches as such. This is not open-web browsing."
+                )
+            system_prompt += guardrails_service.anti_generic_disclaimer_rules()
+            if session_law_query and sources_raw:
+                system_prompt += (
+                    "\n\nThe user asks about NEW or SESSION laws by effective date. "
+                    "List ONLY authorities in the excerpts that mention the effective date "
+                    f"or enactment year requested ({effective_year or 'see question'}). "
+                    "Do NOT claim there are no new laws statewide if excerpts are silent—"
+                    "say what the indexed sources contain and what is missing."
+                )
+            if not sources_raw and not has_inline_text:
+                system_prompt += (
+                    "\n\nThe source index returned NO excerpts for this question. "
+                    "You MUST start your reply with **No controlling authority found** and must NOT "
+                    "claim that no laws exist statewide or cite your training knowledge."
+                )
+            if has_attachment_turn:
+                system_prompt += (
+                    "\n\nThe user attached file(s) in this request. If Relevant Context includes excerpts from those filenames, use them—do not claim you cannot view attachments. "
+                    "Weave uploads into your analysis where relevant. "
+                    "End with a clearly labeled section **Practical next steps** (numbered) grounded in the excerpts and authorities you cited."
+                )
+                if _filenames_suggest_legal_filings(request.doc_sources):
+                    system_prompt += (
+                        "\n\nWhen filenames refer to motions, nonsuit, dismissal, or exhibits, assume a litigation context. "
+                        "Do not reclassify the filing as unrelated engineering work based on noisy exhibit OCR alone."
+                    )
+                if (
+                    not _sources_look_like_source_code_files(request.doc_sources)
+                    and _attachment_head_misleading_non_prose(attachment_raw)
+                ):
+                    system_prompt += (
+                        "\n\nThe attachment excerpt may be dominated by OCR noise. Do not invent a programming-language "
+                        "reading (functions, recursion, comments). Describe readable prose only; acknowledge unreadable spans."
+                    )
+        elif has_attachment_turn and effective_use_rag:
+            system_prompt = guardrails_service.build_general_system_prompt(user_name=current_user.full_name)
+            system_prompt += (
+                "\n\nThe user uploaded document(s); excerpts above come from extraction (including OCR for scans when available). "
+                "If numbered excerpts from their file(s) appear under Relevant Context, you MUST use them—do not claim you cannot view attachments. "
+                "Respond with: (1) **Summary** — what the document(s) appear to be and key facts, parties, dates, or deadlines visible in the excerpts; "
+                "(2) **Practical next steps** — numbered process-oriented actions appropriate to this content (filings, responses, records to gather, professionals to involve); "
+                "(3) **Gaps / verify** — what is missing from the excerpts or unclear (including possible OCR errors). "
+                "Ground statements in the excerpts; do not invent content. This is informational preparation only—not legal advice."
+            )
+            if _filenames_suggest_legal_filings(request.doc_sources):
+                system_prompt += (
+                    "\n\nWhen filenames refer to motions, nonsuit, dismissal, or exhibits, assume a litigation context. "
+                    "Do not reclassify the filing as unrelated engineering work based on noisy exhibit OCR alone."
+                )
+            if (
+                not _sources_look_like_source_code_files(request.doc_sources)
+                and _attachment_head_misleading_non_prose(attachment_raw)
+            ):
+                system_prompt += (
+                    "\n\nThe attachment excerpt may be dominated by OCR noise. Do not invent a programming-language "
+                    "reading (functions, recursion, comments). Describe readable prose only; acknowledge unreadable spans."
+                )
+        else:
+            system_prompt = guardrails_service.build_general_system_prompt(user_name=current_user.full_name)
+
+        gen_max = request.max_output_tokens
+        if gen_max is None:
+            default_out = int(getattr(settings, "CHAT_SIMPLE_MAX_OUTPUT_TOKENS", 768) or 768)
+            if has_attachment_turn and effective_use_rag:
+                gen_max = min(default_out * 2, 1536)
+            elif intent_mode in ("legal", "mixed") and effective_fmt == "research_memo":
+                gen_max = min(default_out * 2, 1024)
+            else:
+                gen_max = default_out
+
+        skip_llm = bool(has_attachment_turn and effective_use_rag and not upload_had_chunks)
+        legal_no_sources = (
+            intent_mode in ("legal", "mixed")
+            and not sources_raw
+            and not has_inline_text
+            and effective_use_rag
+        )
+        session_law_no_relevant = (
+            session_law_query
+            and effective_use_rag
+            and not has_inline_text
+            and not sources_raw
+        )
+        if skip_llm:
+            response_text = (
+                "No extracted text was found in the index for your attachment(s), so the assistant had nothing to read. "
+                "Typical causes: the upload failed (check for an error right after Send), the file has no selectable text "
+                "(image-only PDF without OCR), or the backend could not index it. "
+                "Try the Upload Document screen to confirm success, or export/save the PDF as text-searchable, then attach again."
+            )
+        elif session_law_no_relevant:
+            response_text = guardrails_service.legal_session_law_message(
+                request.message,
+                year=effective_year,
+                corpus_busy=corpus_busy,
+            )
+            warnings.append(
+                "No indexed session-law sources matched this effective-date question."
+            )
+        elif legal_no_sources:
+            response_text = guardrails_service.legal_empty_sources_message(
+                request.message, corpus_busy=corpus_busy
+            )
+            warnings.append(
+                "No Virginia sources were retrieved; returned AI Laws-compliant notice."
+            )
+        else:
+            llm_start = time.time()
+            response_text = await ollama_service.generate(
+                prompt=request.message,
+                context=context_str,
+                system_prompt=system_prompt,
+                max_tokens=gen_max,
+                user_message_before_context=has_inline_text,
+            )
+            logger.info(f"[Chat/simple] LLM generate: {time.time() - llm_start:.2f}s (max_tokens={gen_max})")
+            if not response_text or not response_text.strip():
+                response_text = "I couldn't generate a response. Please try again."
+            elif (
+                intent_mode in ("legal", "mixed")
+                and guardrails_service.looks_like_generic_disclaimer(response_text)
+            ):
+                logger.warning("[Chat/simple] Replacing generic model disclaimer with AI Laws notice")
+                warnings.append("A generic chatbot-style disclaimer was suppressed.")
+                response_text = guardrails_service.legal_session_law_message(
+                    request.message, year=effective_year, corpus_busy=corpus_busy
+                )
+
+        logger.info(f"[Chat/simple] total request: {time.time() - t0:.2f}s")
+
+        formatted_sources = [
+            {
+                "source": (s.get("metadata") or {}).get("source", "Unknown"),
+                "jurisdiction": (s.get("metadata") or {}).get("jurisdiction", ""),
+                "citation": (s.get("metadata") or {}).get("citation"),
+                "url": (s.get("metadata") or {}).get("origin_url"),
+                "link": (s.get("metadata") or {}).get("origin_url"),
+                "live_fetch": bool((s.get("metadata") or {}).get("live_fetch")),
+                "snippet": ((s.get("text") or "")[:400] + ("..." if len(s.get("text") or "") > 400 else "")),
+            }
+            for s in sources_raw[:20]
+        ]
+
+        chat_message = ChatMessage(
+            user_id=current_user.id,
+            conversation_id=conversation_id,
+            subject=None,
+            message=request.message,
+            response=response_text,
+            sources=json.dumps(formatted_sources),
+            full_sources=json.dumps(sources_raw[:20]),
+            warnings=json.dumps(warnings),
+        )
+        db.add(chat_message)
+        db.commit()
+        db.refresh(chat_message)
+
+        if (
+            settings.SEMANTIC_CACHE_ENABLED
+            and is_first_simple
+            and query_embedding_simple
+            and not has_attachment_turn
+            and response_text
+            and not response_text.strip().startswith("No controlling authority")
+        ):
+            try:
+                semantic_cache_service.store(
+                    db,
+                    user_id=current_user.id,
+                    scope_fp=scope_simple,
+                    ollama_model=settings.OLLAMA_MODEL,
+                    query_preview=enhanced_for_cache,
+                    query_embedding=query_embedding_simple,
+                    response_text=response_text,
+                    sources_display=formatted_sources,
+                    full_sources=sources_raw[:20],
+                    warnings=warnings,
+                    extra={
+                        "detail_level": "standard",
+                        "recommended_level": None,
+                        "total_sources": len(sources_raw[:20]),
+                        "unique_sources": len(formatted_sources),
+                        "response_format": effective_fmt,
+                    },
+                )
+            except Exception as ex:
+                logger.warning(f"[Chat/simple] semantic cache store skipped: {ex}")
+
+        return ChatResponse(
+            response=response_text,
+            sources=formatted_sources,
+            conversation_id=conversation_id,
+            timestamp=datetime.now().isoformat(),
+            warnings=warnings,
+            message_id=chat_message.id,
+            semantic_cache_hit=False,
+            response_format=effective_fmt,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Chat/simple error: {e}", exc_info=True)
+        err_msg = str(e).strip()
+        # Return a clear message so the frontend can show it; include hint for common Ollama issues
+        if "cpu buffer" in err_msg.lower() or "loading on cpu" in err_msg.lower():
+            detail = (
+                "Model failed to load (CPU RAM / GPU not used). "
+                "Quit Ollama from the system tray, run RESTART_EVERYTHING.bat or START_OLLAMA_GPU.bat, then START_BACKEND.bat. "
+                "In .env use OLLAMA_MODEL=tinyllama:latest (smallest). Raw: "
+                + (err_msg[:400] + "…" if len(err_msg) > 400 else err_msg)
+            )
+        elif (
+            ("not running" in err_msg.lower() and "11434" in err_msg)
+            or "not reachable at" in err_msg.lower()
+            or "cannot connect to ollama" in err_msg.lower()
+        ):
+            detail = (
+                "Ollama is not running (nothing answered on port 11434). "
+                "Do not start only the Python backend from the IDE unless Ollama is already up. "
+                "From the LAWFIRMAI folder: run RESTART_EVERYTHING.bat, or run START_OLLAMA_GPU.bat (leave it open) then START_BACKEND.bat."
+            )
+        elif "model" in err_msg.lower() and "not found" in err_msg.lower():
+            detail = err_msg + " Run: ollama pull <name> and match OLLAMA_MODEL in .env to ollama list."
+        elif "Ollama" in err_msg or "ollama" in err_msg.lower():
+            detail = err_msg + " Check Ollama on http://127.0.0.1:11434/api/tags and .env OLLAMA_MODEL."
+        else:
+            detail = err_msg
+        raise HTTPException(status_code=500, detail=detail)
 
 
 @router.post("/query", response_model=ChatResponse)
@@ -237,6 +1019,9 @@ async def chat_query(
     warnings: List[str] = []
     
     try:
+        intent_mode = guardrails_service.detect_query_intent(request.message)
+        effective_fmt = _effective_response_format(request, intent_mode)
+
         # === STEP 1: DETECT SPECIFICITY ===
         # Check if user is asking for a specific statute type (e.g., "Domestic Assault")
         # vs a general one (e.g., "Assault"). This helps ensure we provide the exact
@@ -343,7 +1128,8 @@ async def chat_query(
         system_prompt = guardrails_service.build_system_prompt(
             is_first_message=is_first_message,
             has_conversation_history=has_conversation_history,
-            user_name=current_user.full_name
+            user_name=current_user.full_name,
+            response_format=effective_fmt,
         )
         
         # Add extra specificity requirements if this is a specific statute request
@@ -363,41 +1149,136 @@ async def chat_query(
         # The guardrails service may enhance/modify the user's prompt to ensure
         # it follows best practices (e.g., adding context, clarifying intent)
         enhanced_prompt = guardrails_service.enhance_prompt(request.message)
+
+        # --- Semantic response cache (similar questions skip RAG + LLM) ---
+        query_embedding: Optional[List[float]] = None
+        semantic_cache_hit = False
+        want_live = _want_live_lookup(request)
+        scope_fp = semantic_cache_service.scope_fingerprint(
+            request.use_rag,
+            request.exhaustive_search,
+            detail_level,
+            request.max_results,
+            request.doc_sources,
+            request.skip_clarification,
+            effective_fmt,
+            extra=f"web:{want_live}:{datetime.now().date().isoformat()}",
+        )
+        if settings.SEMANTIC_CACHE_ENABLED and is_first_message:
+            try:
+                query_embedding = await ollama_service.embed(enhanced_prompt[:8000])
+                cache_hit = semantic_cache_service.find_best_match(
+                    db, current_user.id, query_embedding, scope_fp, settings.OLLAMA_MODEL
+                )
+                if cache_hit:
+                    semantic_cache_service.record_hit(db, cache_hit.row.id)
+                    response_text, formatted_sources, full_source_data, cached_warnings, extra = semantic_cache_service.deserialize_cached_response(
+                        cache_hit.row
+                    )
+                    warnings = list(cached_warnings or [])
+                    semantic_cache_hit = True
+                    verification_status = extra.get("verification_status")
+                    authoritative_sources_count = extra.get("authoritative_sources_count")
+                    secondary_sources_count = extra.get("secondary_sources_count")
+                    conflict_messages = extra.get("conflict_messages") or []
+                    search_total_results = extra.get("search_total_results")
+                    search_unique_sources = extra.get("search_unique_sources")
+                    scenario_prediction = None
+                    clarification_only = False
+                    recommended_level_cached = extra.get("recommended_level")
+                    detail_level_out = extra.get("detail_level") or detail_level
+                    validation = {"warnings": list(warnings)}
+                    conv_id = request.conversation_id or f"conv_{current_user.id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                    try:
+                        from server.services.conversation_subject_service import conversation_subject_service
+                        conversation_subject_cached = conversation_subject_service.detect_subject(request.message, []) or None
+                    except Exception:
+                        conversation_subject_cached = None
+                    chat_message = ChatMessage(
+                        user_id=current_user.id,
+                        conversation_id=conv_id,
+                        subject=conversation_subject_cached,
+                        message=request.message,
+                        response=response_text,
+                        sources=json.dumps(formatted_sources),
+                        full_sources=json.dumps(full_source_data),
+                        warnings=json.dumps(validation.get("warnings", [])),
+                    )
+                    db.add(chat_message)
+                    db.commit()
+                    db.refresh(chat_message)
+                    try:
+                        from server.models import AuditLog
+                        db.add(
+                            AuditLog(
+                                user_id=current_user.id,
+                                action="chat_query",
+                                path="/api/chat/query",
+                                method="POST",
+                                status=200,
+                                details=json.dumps({"conversation_id": conv_id, "semantic_cache_hit": True})[:1000],
+                            )
+                        )
+                        db.commit()
+                    except Exception:
+                        db.rollback()
+                    return ChatResponse(
+                        response=response_text,
+                        sources=formatted_sources,
+                        conversation_id=conv_id,
+                        timestamp=datetime.now().isoformat(),
+                        warnings=warnings,
+                        message_id=chat_message.id,
+                        scenario_prediction=None,
+                        detail_level=detail_level_out,
+                        recommended_level=recommended_level_cached if recommended_level_cached is not None else recommended_level,
+                        is_streaming=False,
+                        total_sources=extra.get("total_sources"),
+                        unique_sources=extra.get("unique_sources"),
+                        verification_status=verification_status,
+                        authoritative_sources_count=authoritative_sources_count,
+                        secondary_sources_count=secondary_sources_count,
+                        conflict_messages=conflict_messages or None,
+                        search_total_results=search_total_results,
+                        search_unique_sources=search_unique_sources,
+                        clarification_only=False,
+                        clarification_questions=None,
+                        semantic_cache_hit=True,
+                        response_format=(extra or {}).get("response_format") or effective_fmt,
+                    )
+            except Exception as cache_ex:
+                logger.warning(f"Semantic cache lookup failed (continuing with full pipeline): {cache_ex}")
         
         # === STEP 4: RETRIEVE RAG CONTEXT ===
         # If RAG is enabled, search the vector database for relevant legal documents
         # This uses semantic search to find documents similar to the query
         
         # CRITICAL: Query SCOTUS separately as a distinct authoritative database
-        # SCOTUS is #1 in hierarchy: "United States Constitution and U.S. Supreme Court precedent (binding on all jurisdictions)"
+        # SCOTUS is #1 in hierarchy. If this fails (no data, timeout), chat continues without SCOTUS.
         scotus_sources = []
         if request.use_rag:
-            logger.info("[Chat] Querying SCOTUS database separately...")
-            scotus_start = time.time()
-            # Check if query mentions a specific case name (Heller, Bruen, etc.)
-            case_name_matches = []
-            landmark_case_names = ['heller', 'bruen', 'mcdonald', 'miller', 'miranda']
-            query_lower = enhanced_prompt.lower()
-            
-            for case_name in landmark_case_names:
-                if case_name in query_lower:
-                    # Search by case name first for exact matches
-                    case_results = await scotus_service.search_scotus_by_case_name(case_name)
-                    case_name_matches.extend(case_results[:2])  # Top 2 per case
-            
-            # Also do semantic search
-            scotus_sources = await scotus_service.search_scotus(enhanced_prompt, n_results=5)
-            
-            # Combine case name matches with semantic search, prioritizing case name matches
-            if case_name_matches:
-                # Remove duplicates
-                seen_ids = {r['id'] for r in scotus_sources}
-                for case_match in case_name_matches:
-                    if case_match['id'] not in seen_ids:
-                        scotus_sources.insert(0, case_match)  # Insert at beginning
-                        seen_ids.add(case_match['id'])
-            scotus_elapsed = time.time() - scotus_start
-            logger.info(f"[Chat] SCOTUS search completed in {scotus_elapsed:.2f}s, found {len(scotus_sources)} cases")
+            try:
+                logger.info("[Chat] Querying SCOTUS database separately...")
+                scotus_start = time.time()
+                query_lower = enhanced_prompt.lower()
+                case_name_matches = []
+                landmark_case_names = ['heller', 'bruen', 'mcdonald', 'miller', 'miranda']
+                for case_name in landmark_case_names:
+                    if case_name in query_lower:
+                        case_results = await scotus_service.search_scotus_by_case_name(case_name)
+                        case_name_matches.extend(case_results[:2])
+                scotus_sources = await scotus_service.search_scotus(enhanced_prompt, n_results=5)
+                if case_name_matches:
+                    seen_ids = {r['id'] for r in scotus_sources}
+                    for case_match in case_name_matches:
+                        if case_match['id'] not in seen_ids:
+                            scotus_sources.insert(0, case_match)
+                            seen_ids.add(case_match['id'])
+                scotus_elapsed = time.time() - scotus_start
+                logger.info(f"[Chat] SCOTUS search completed in {scotus_elapsed:.2f}s, found {len(scotus_sources)} cases")
+            except Exception as e:
+                logger.warning(f"[Chat] SCOTUS search failed (non-fatal): {e}")
+                scotus_sources = []
         
         context = None
         sources = []
@@ -485,7 +1366,7 @@ async def chat_query(
                     all_sources.append(state_source)
             
             sources = all_sources  # Replace with combined, properly ordered sources
-            if _want_live_lookup(request):
+            if want_live:
                 await _merge_live_official_sources(request.message, sources, warnings)
 
             # Capture verification summary for UI (from search_result)
@@ -621,8 +1502,9 @@ async def chat_query(
             else:
                 context_parts.append("No relevant legal authority found.")
             
-            # CRITICAL: Add explicit list of available statutes to prevent hallucination
+            # CRITICAL: Add explicit list of available statutes and regulations to prevent hallucination
             available_statutes = set()
+            available_regulations = set()  # VAC citations
             available_cases = []
             for source in sources:
                 # Extract citations from source text
@@ -630,12 +1512,27 @@ async def chat_query(
                 # Find all Virginia Code citations
                 va_citations = re.findall(r'§\s*(\d+\.\d+-\d+(?:\.\d+)?)', text)
                 available_statutes.update(va_citations)
+                # Find Virginia Administrative Code (VAC) citations - e.g., 18 VAC 120-10-10
+                vac_citations = re.findall(r'(\d+)\s*VAC\s*(\d+)[-.](\d+)(?:[-.](\d+))?', text, re.IGNORECASE)
+                for vac in vac_citations:
+                    if len(vac) == 4 and vac[3]:
+                        available_regulations.add(f"{vac[0]} VAC {vac[1]}-{vac[2]}-{vac[3]}")
+                    else:
+                        available_regulations.add(f"{vac[0]} VAC {vac[1]}-{vac[2]}")
                 # Also check metadata
                 meta_cit = source.get('metadata', {}).get('citation', '')
                 if meta_cit:
                     cit_match = re.search(r'(\d+\.\d+-\d+(?:\.\d+)?)', str(meta_cit))
                     if cit_match:
                         available_statutes.add(cit_match.group(1))
+                    # Check for VAC in metadata
+                    vac_meta = re.search(r'(\d+)\s*VAC\s*(\d+)[-.](\d+)(?:[-.](\d+))?', str(meta_cit), re.IGNORECASE)
+                    if vac_meta:
+                        g = vac_meta.groups()
+                        if len(g) == 4 and g[3]:
+                            available_regulations.add(f"{g[0]} VAC {g[1]}-{g[2]}-{g[3]}")
+                        else:
+                            available_regulations.add(f"{g[0]} VAC {g[1]}-{g[2]}")
                 # Extract case names with citations
                 case_pattern = r'(Commonwealth|State)\s+v\.\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?[,\s]+(\d+\s+(?:Va\.|Va\.\s+App\.|U\.S\.|S\.\s+Ct\.))'
                 cases = re.findall(case_pattern, text, re.IGNORECASE)
@@ -644,7 +1541,7 @@ async def chat_query(
             # CRITICAL: ALWAYS add explicit statute list to prevent hallucination
             # This section MUST appear even if empty to prevent the AI from making up citations
             context_parts.append("\n" + "="*80)
-            context_parts.append("CRITICAL: AVAILABLE STATUTES AND CASES IN SOURCES")
+            context_parts.append("CRITICAL: AVAILABLE STATUTES, REGULATIONS, AND CASES IN SOURCES")
             context_parts.append("="*80)
             context_parts.append("YOU MAY ONLY CITE THE FOLLOWING STATUTES THAT APPEAR IN THE SOURCES:")
             if available_statutes:
@@ -654,6 +1551,13 @@ async def chat_query(
                 context_parts.append("  - NO VIRGINIA CODE SECTIONS FOUND IN SOURCES")
                 context_parts.append("  - THIS MEANS YOU CANNOT CITE ANY VIRGINIA CODE SECTIONS")
             context_parts.append("")
+            context_parts.append("AVAILABLE REGULATIONS (Virginia Administrative Code) IN SOURCES:")
+            if available_regulations:
+                for reg in sorted(available_regulations):
+                    context_parts.append(f"  - {reg}")
+            else:
+                context_parts.append("  - NO VAC REGULATIONS FOUND IN SOURCES")
+            context_parts.append("")
             context_parts.append("AVAILABLE CASE CITATIONS IN SOURCES:")
             if available_cases:
                 for case in available_cases[:10]:  # Limit to 10
@@ -661,8 +1565,9 @@ async def chat_query(
             else:
                 context_parts.append("  - NO CASE CITATIONS FOUND IN SOURCES")
             context_parts.append("")
-            context_parts.append("ABSOLUTE RULE: DO NOT cite any statute or case NOT listed above.")
+            context_parts.append("ABSOLUTE RULE: DO NOT cite any statute, regulation, or case NOT listed above.")
             context_parts.append("If the list above shows 'NO VIRGINIA CODE SECTIONS FOUND', you MUST NOT cite any Virginia Code sections.")
+            context_parts.append("If the list above shows 'NO VAC REGULATIONS FOUND', you MUST NOT cite any Virginia Administrative Code sections.")
             context_parts.append("If you need to discuss self-defense and no statute is listed above, you MUST state:")
             context_parts.append("'Self-defense in Virginia is primarily a common law defense. No specific Virginia Code section was found in the available sources.'")
             context_parts.append("")
@@ -1015,20 +1920,31 @@ async def chat_query(
         elif scenario_context:
             context = scenario_context
         
-        # Check if clarification is needed before generating response
+        # Check if clarification is needed before generating response (unless user opted to skip)
         from server.services.clarification_service import clarification_service
-        needs_clarification, clarification_questions = clarification_service.needs_clarification(
-            query=request.message,
-            context=context,
-            sources=sources if request.use_rag else None
-        )
+        needs_clarification = False
+        clarification_questions = None
+        if not request.skip_clarification:
+            needs_clarification, clarification_questions = clarification_service.needs_clarification(
+                query=request.message,
+                context=context,
+                sources=sources if request.use_rag else None
+            )
         
-        # If RAG returned nothing, force 'No controlling authority found.'
-        # This is critical - we must NOT allow the AI to use training data when no sources are found
+        # CLARIFY-FIRST: When clarification is needed, return ONLY questions—do not speculate (AI Laws Article I)
+        clarification_only = False
         if request.use_rag and not sources:
             response_text = "No controlling authority found."
             # Add explicit warning that no sources were available
             warnings.append("No legal sources were found in the database for this query. The system cannot provide legal analysis without verified sources.")
+        elif needs_clarification and clarification_questions:
+            # Clarify-first: Do NOT generate—return only clarification questions to avoid speculation
+            response_text = clarification_service.format_clarification_questions(
+                clarification_questions,
+                request.message
+            )
+            clarification_only = True
+            logger.info(f"[Chat] Clarify-first: returning {len(clarification_questions)} question(s), skipping LLM generation")
         else:
             # Generate response (now includes scenario context if applicable)
             # Use configured token limit based on detail level
@@ -1049,26 +1965,9 @@ async def chat_query(
             except Exception as e:
                 logger.error(f"Ollama generation failed: {str(e)}", exc_info=True)
                 raise  # Re-raise to be caught by outer exception handler
-            
-            # If clarification is needed and AI didn't ask, add clarification questions
-            if needs_clarification and clarification_questions:
-                # Check if response already contains questions
-                response_lower = response_text.lower()
-                has_questions = any(
-                    marker in response_lower 
-                    for marker in ["?", "could you", "can you", "would you", "please provide", "i need", "clarify"]
-                )
-                
-                if not has_questions:
-                    # Add clarification questions to response
-                    clarification_text = clarification_service.format_clarification_questions(
-                        clarification_questions,
-                        request.message
-                    )
-                    response_text = response_text + clarification_text
         
-        # Validate specificity if this was a specific request
-        if specificity_info["is_specific_request"]:
+        # Validate specificity if this was a specific request (skip for clarification-only)
+        if not clarification_only and specificity_info["is_specific_request"]:
             response_lower = response_text.lower()
             specific_terms_found = any(term in response_lower for term in specificity_info["specific_terms"])
             
@@ -1098,15 +1997,16 @@ async def chat_query(
         
         # full_source_data already initialized above - skip duplicate initialization
         
-        # Validate and Correct Response (NEW LOOP)
-        response_text = await guardrails_service.validate_and_correct(
-            response_text, 
-            request.message, 
-            sources if request.use_rag else []
-        )
+        # Validate and Correct Response (skip for clarification-only—no answer to validate)
+        if not clarification_only:
+            response_text = await guardrails_service.validate_and_correct(
+                response_text, 
+                request.message, 
+                sources if request.use_rag else []
+            )
         
-        # Verify answer against sources (ensure answer is "right")
-        if request.use_rag and sources:
+        # Verify answer against sources (skip for clarification-only)
+        if not clarification_only and request.use_rag and sources:
             from server.services.answer_verification_service import answer_verification_service
             verification_result = answer_verification_service.verify_answer_against_sources(
                 answer=response_text,
@@ -1126,36 +2026,39 @@ async def chat_query(
                         if issue not in warnings:
                             warnings.append(issue)
         
-        # Add Uncertainty Notice if conditions are met (AI Laws Article VIII)
-        from server.services.uncertainty_service import uncertainty_service
-        scenario_confidence = scenario_prediction.get("confidence") if scenario_prediction else None
-        similar_scenarios = scenario_prediction.get("similar_scenarios") if scenario_prediction else None
-        
-        response_text = uncertainty_service.add_uncertainty_notice_to_response(
-            response=response_text,
-            authoritative_sources_count=authoritative_sources_count,
-            secondary_sources_count=secondary_sources_count,
-            verification_status=verification_status,
-            scenario_confidence=scenario_confidence,
-            similar_scenarios=similar_scenarios,
-            conflict_messages=conflict_messages,
-            total_sources=len(full_source_data) if request.use_rag else None
-        )
+        # Add Uncertainty Notice if conditions are met (skip for clarification-only)
+        if not clarification_only:
+            from server.services.uncertainty_service import uncertainty_service
+            scenario_confidence = scenario_prediction.get("confidence") if scenario_prediction else None
+            similar_scenarios = scenario_prediction.get("similar_scenarios") if scenario_prediction else None
+            
+            response_text = uncertainty_service.add_uncertainty_notice_to_response(
+                response=response_text,
+                authoritative_sources_count=authoritative_sources_count,
+                secondary_sources_count=secondary_sources_count,
+                verification_status=verification_status,
+                scenario_confidence=scenario_confidence,
+                similar_scenarios=similar_scenarios,
+                conflict_messages=conflict_messages,
+                total_sources=len(full_source_data) if request.use_rag else None
+            )
         
         # Date disclosure removed - keep response cohesive
         
-        # Validate response
-        validation = guardrails_service.validate_response(response_text, sources)
-        
-        # Add specificity validation warnings
-        if specificity_info["is_specific_request"]:
-            response_lower = response_text.lower()
-            specific_terms_found = any(term in response_lower for term in specificity_info["specific_terms"])
-            if not specific_terms_found:
-                validation["warnings"].append(
-                    f"Response may not match the specific statute type requested ({', '.join(specificity_info['specific_terms'])}). "
-                    "Verify that the cited statute is the specific type, not the general parent statute."
-                )
+        # Validate response (skip for clarification-only)
+        if clarification_only:
+            validation = {"warnings": []}
+        else:
+            validation = guardrails_service.validate_response(response_text, sources)
+            # Add specificity validation warnings
+            if specificity_info["is_specific_request"]:
+                response_lower = response_text.lower()
+                specific_terms_found = any(term in response_lower for term in specificity_info["specific_terms"])
+                if not specific_terms_found:
+                    validation["warnings"].append(
+                        f"Response may not match the specific statute type requested ({', '.join(specificity_info['specific_terms'])}). "
+                        "Verify that the cited statute is the specific type, not the general parent statute."
+                    )
         
         # full_source_data already initialized above - now just build summary groups
 
@@ -1254,6 +2157,44 @@ async def chat_query(
         db.add(chat_message)
         db.commit()
         db.refresh(chat_message)
+
+        # Persist semantic cache after message is saved (first message only; not clarifications)
+        if (
+            settings.SEMANTIC_CACHE_ENABLED
+            and is_first_message
+            and not clarification_only
+            and query_embedding
+            and response_text
+            and not response_text.strip().startswith("No controlling authority")
+        ):
+            try:
+                semantic_cache_service.store(
+                    db,
+                    user_id=current_user.id,
+                    scope_fp=scope_fp,
+                    ollama_model=settings.OLLAMA_MODEL,
+                    query_preview=enhanced_prompt,
+                    query_embedding=query_embedding,
+                    response_text=response_text,
+                    sources_display=formatted_sources,
+                    full_sources=full_source_data,
+                    warnings=warnings,
+                    extra={
+                        "verification_status": verification_status,
+                        "authoritative_sources_count": authoritative_sources_count,
+                        "secondary_sources_count": secondary_sources_count,
+                        "conflict_messages": conflict_messages or [],
+                        "search_total_results": search_total_results,
+                        "search_unique_sources": search_unique_sources,
+                        "detail_level": detail_level,
+                        "recommended_level": recommended_level,
+                        "total_sources": len(full_source_data),
+                        "unique_sources": len(formatted_sources),
+                        "response_format": effective_fmt,
+                    },
+                )
+            except Exception as cache_store_ex:
+                logger.warning(f"Semantic cache store skipped: {cache_store_ex}")
         
         # Audit log
         try:
@@ -1297,6 +2238,10 @@ async def chat_query(
             conflict_messages=conflict_messages or None,
             search_total_results=search_total_results,
             search_unique_sources=search_unique_sources,
+            clarification_only=clarification_only,
+            clarification_questions=clarification_questions if clarification_only else None,
+            semantic_cache_hit=semantic_cache_hit,
+            response_format=effective_fmt,
         )
     
     except Exception as e:
@@ -1332,6 +2277,9 @@ async def chat_stream(
     from server.services.smart_default_service import smart_default_service
     from server.config import settings
     try:
+        intent_mode = guardrails_service.detect_query_intent(request.message)
+        effective_fmt = _effective_response_format(request, intent_mode)
+
         # Smart default detection for streaming
         conversation_history_for_detection = []
         try:
@@ -1364,7 +2312,7 @@ async def chat_stream(
         detail_instruction = detail_level_config["instruction"]
         
         # Build system prompt with detail level
-        system_prompt = guardrails_service.build_system_prompt()
+        system_prompt = guardrails_service.build_system_prompt(response_format=effective_fmt)
         system_prompt += f"\n\nRESPONSE DETAIL LEVEL: {detail_level.upper()}\n"
         system_prompt += f"{detail_instruction}\n"
         if request.exhaustive_search:
@@ -1374,6 +2322,7 @@ async def chat_stream(
         
         # Get context with proper search
         context = None
+        sources = []
         if request.use_rag:
             specificity_info = rag_service._detect_specific_statute_request(request.message)
             n_results = 50 if not request.exhaustive_search else 200
@@ -1398,26 +2347,53 @@ async def chat_stream(
             
             context = "\n\n".join(context_parts)
         
+        # Clarify-first: check if clarification is needed (unless user opted to skip)
+        from server.services.clarification_service import clarification_service
+        needs_clarification = False
+        clarification_questions = None
+        if not request.skip_clarification:
+            needs_clarification, clarification_questions = clarification_service.needs_clarification(
+                query=request.message,
+                context=context,
+                sources=sources if request.use_rag else None
+            )
+        
         from fastapi.responses import StreamingResponse
         
         async def generate():
             # Send metadata first
+            clarification_only = bool(needs_clarification and clarification_questions)
             metadata = {
                 "type": "metadata",
                 "detail_level": detail_level,
                 "max_tokens": max_output_tokens,
-                "source_count": len(sources) if request.use_rag else 0
+                "source_count": len(sources) if request.use_rag else 0,
+                "clarification_only": clarification_only,
+                "clarification_questions": clarification_questions if clarification_only else None,
+                "response_format": effective_fmt,
             }
             yield f"data: {json.dumps(metadata)}\n\n"
             
-            # Stream the response
-            async for chunk in ollama_service.generate_stream(
-                prompt=enhanced_prompt,
-                context=context,
-                system_prompt=system_prompt,
-                max_tokens=max_output_tokens
-            ):
-                yield f"data: {chunk}\n\n"
+            # Clarify-first: if clarification needed, stream only questions (no LLM call)
+            if needs_clarification and clarification_questions:
+                clarification_text = clarification_service.format_clarification_questions(
+                    clarification_questions,
+                    request.message
+                )
+                # Send clarification as single chunk (same format as Ollama chunks)
+                yield f"data: {clarification_text}\n\n"
+            # No sources: stream "No controlling authority found."
+            elif request.use_rag and not sources:
+                yield f"data: No controlling authority found.\n\n"
+            else:
+                # Stream the response from Ollama
+                async for chunk in ollama_service.generate_stream(
+                    prompt=enhanced_prompt,
+                    context=context,
+                    system_prompt=system_prompt,
+                    max_tokens=max_output_tokens
+                ):
+                    yield f"data: {chunk}\n\n"
             yield f"data: [DONE]\n\n"
         
         return StreamingResponse(generate(), media_type="text/event-stream")
@@ -1607,6 +2583,82 @@ async def expand_response(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error expanding response: {str(e)}")
+
+
+def _corpus_update_in_progress() -> bool:
+    """True while scripts/update_va_legal_corpus.py is rebuilding the statute index."""
+    lock = Path(settings.DATA_DIR) / ".va_corpus_update.lock"
+    return lock.exists()
+
+
+@router.get("/ready")
+async def chat_ready():
+    """
+    Check if chat backend is ready (Ollama + model, RAG path).
+    No auth required. Use this to show "Chat ready" or hints before sending a message.
+    """
+    from server.config import settings
+    result = {"ready": True, "backend": "ok", "ollama": "unknown", "model": settings.OLLAMA_MODEL, "rag": "ok"}
+    if _corpus_update_in_progress():
+        result["corpus_update_in_progress"] = True
+        result["message"] = (
+            "Virginia Code index is rebuilding. Chat works, but statute search may be slow or "
+            "incomplete until the update finishes. Run updates overnight via UPDATE_VA_LAWS.bat."
+        )
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
+            if r.status_code != 200:
+                result["ollama"] = "error"
+                result["ready"] = False
+                result["message"] = "Ollama returned an error. Is it running?"
+                return result
+            data = r.json() or {}
+            model_list = data.get("models") if isinstance(data.get("models"), list) else []
+            models = [m.get("name") for m in model_list if isinstance(m, dict) and m.get("name")]
+            model_found = settings.OLLAMA_MODEL in models or any(
+                n == settings.OLLAMA_MODEL or (n.startswith(settings.OLLAMA_MODEL + "-") or n.startswith(settings.OLLAMA_MODEL + ":"))
+                for n in models
+            )
+            if model_found:
+                result["ollama"] = "ok"
+            else:
+                result["ollama"] = "model_missing"
+                result["ready"] = False
+                result["message"] = f"Model '{settings.OLLAMA_MODEL}' not in Ollama. Run: ollama run {settings.OLLAMA_MODEL}"
+                result["available_models"] = models[:10]
+    except Exception as e:
+        result["ollama"] = "unavailable"
+        result["ready"] = False
+        result["message"] = f"Ollama not reachable at {settings.OLLAMA_BASE_URL}. Start with: ollama serve"
+    try:
+        p = Path(settings.CHROMA_DB_PATH)
+        if not p.exists():
+            result["rag"] = "path_missing"
+    except Exception:
+        result["rag"] = "error"
+    return result
+
+
+@router.get("/models")
+async def get_ollama_models():
+    """
+    Get available Ollama models. Used by AdminDashboard for AI engine status.
+    Returns list of model names from Ollama.
+    """
+    try:
+        import httpx
+        from server.config import settings
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
+            if response.status_code == 200:
+                data = response.json()
+                models = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+                return {"models": models, "status": "ok"}
+    except Exception:
+        pass
+    return {"models": [], "status": "unavailable"}
 
 
 @router.get("/history", response_model=ChatHistoryListResponse)

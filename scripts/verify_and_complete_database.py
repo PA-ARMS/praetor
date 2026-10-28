@@ -23,8 +23,12 @@ if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8')
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+_scripts_dir = Path(__file__).resolve().parent
+if str(_scripts_dir) not in sys.path:
+    sys.path.insert(0, str(_scripts_dir))
 
 from server.services.rag_service import rag_service
+from corpus_progress import write_progress
 from server.services.ollama_service import ollama_service
 
 # Paths
@@ -88,6 +92,24 @@ async def check_rag_status() -> Dict:
         return {"error": str(e)}
 
 
+def count_uncodified_acts_since(min_year: int = 2015) -> int:
+    """Count uncodified act rows (2015+) for progress total."""
+    path = VA_CSV_DIR / "UnCodifiedActs.csv"
+    if not path.exists():
+        return 0
+    csv.field_size_limit(10_000_000)
+    total = 0
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        for row in csv.DictReader(f):
+            year = (row.get("Year") or "").strip()
+            try:
+                if year and int(year) >= min_year:
+                    total += 1
+            except ValueError:
+                pass
+    return total
+
+
 def count_csv_sections() -> int:
     """Count total sections in VA CSV files"""
     total = 0
@@ -101,7 +123,7 @@ def count_csv_sections() -> int:
     return total
 
 
-async def ingest_va_csv_complete():
+async def ingest_va_csv_complete(corpus_refresh_at: str | None = None):
     """Ingest ALL Virginia Code CSV data into RAG with proper metadata"""
     log("=" * 60)
     log("INGESTING VIRGINIA CODE CSV DATA")
@@ -110,6 +132,12 @@ async def ingest_va_csv_complete():
     csv_files = sorted(VA_CSV_DIR.glob("CoVTitle*.csv"))
     total_sections = count_csv_sections()
     log(f"Found {len(csv_files)} CSV files with {total_sections:,} total sections")
+    write_progress(
+        "statutes",
+        message="Ingesting Code of Virginia titles",
+        current=0,
+        total=total_sections,
+    )
     
     ingested = 0
     skipped = 0
@@ -166,8 +194,10 @@ async def ingest_va_csv_complete():
                         "article": article,
                         "title_number": title_num,
                         "file": csv_file.name,
-                        "official": True
+                        "official": True,
                     }
+                    if corpus_refresh_at:
+                        metadata["corpus_refresh_at"] = corpus_refresh_at
                     
                     try:
                         # Use section as doc_id for deduplication
@@ -181,6 +211,12 @@ async def ingest_va_csv_complete():
                         
                         if ingested % 500 == 0:
                             log(f"  Ingested {ingested:,} sections...")
+                            write_progress(
+                                "statutes",
+                                message=f"Title {title_num}",
+                                current=ingested,
+                                total=total_sections,
+                            )
                             
                     except Exception as e:
                         errors += 1
@@ -190,7 +226,128 @@ async def ingest_va_csv_complete():
         except Exception as e:
             log(f"Error processing {csv_file.name}: {e}", "ERROR")
     
+    write_progress(
+        "statutes",
+        message="Code of Virginia ingest complete",
+        current=ingested,
+        total=total_sections or ingested or 1,
+    )
     log(f"Ingestion complete: {ingested:,} ingested, {skipped:,} skipped, {errors:,} errors", "SUCCESS")
+    return ingested
+
+
+async def ingest_va_uncodified_acts(corpus_refresh_at: str | None = None, max_rows: int | None = None):
+    """
+    Ingest Virginia uncodified/session acts (includes many effective-date enactments).
+    Source: data/va_csv/UnCodifiedActs.csv from LIS.
+    """
+    path = VA_CSV_DIR / "UnCodifiedActs.csv"
+    if not path.exists():
+        log("UnCodifiedActs.csv not found — skip session acts", "WARNING")
+        return 0
+
+    log("=" * 60)
+    log("INGESTING VIRGINIA UNCODIFIED / SESSION ACTS")
+    log("=" * 60)
+
+    total_uncodified = count_uncodified_acts_since(2015)
+    log(f"Uncodified acts to ingest (2015+): {total_uncodified:,}")
+    write_progress(
+        "uncodified",
+        message="Ingesting session / uncodified acts",
+        current=0,
+        total=total_uncodified or 1,
+    )
+
+    ingested = 0
+    skipped = 0
+    import hashlib
+
+    csv.field_size_limit(10_000_000)
+
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        reader = csv.DictReader(f)
+        for i, row in enumerate(reader):
+            if max_rows is not None and i >= max_rows:
+                break
+            year = (row.get("Year") or "").strip()
+            # Session-law refresh: prioritize 2015+ (covers recent July 1 effective-date questions)
+            if year:
+                try:
+                    if int(year) < 2015:
+                        skipped += 1
+                        continue
+                except ValueError:
+                    pass
+            chapter = (row.get("Chapter") or "").strip()
+            bill = (row.get("BillNum") or "").strip()
+            title = (row.get("Title") or "").strip()
+            catchline = (row.get("CatchLine") or "").strip()
+            subject = (row.get("Subject") or "").strip()
+            session = (row.get("Session") or "").strip()
+
+            body_parts = []
+            if catchline:
+                body_parts.append(catchline)
+            if title:
+                body_parts.append(title)
+            body = " ".join(body_parts).strip()
+            if len(body) < 40:
+                skipped += 1
+                continue
+
+            citation = f"Va. Acts {year} Ch. {chapter}" if year and chapter else f"Va. Uncodified Act {year or 'n.d.'}"
+            doc_parts = [
+                f"Virginia Uncodified Act — {citation}",
+                f"Year: {year}" if year else "",
+                f"Session: {session}" if session else "",
+                f"Subject: {subject}" if subject else "",
+                f"Bill: {bill}" if bill else "",
+                "",
+                body,
+            ]
+            doc_text = "\n".join(p for p in doc_parts if p)
+
+            safe = hashlib.md5(f"{year}_{chapter}_{bill}_{title[:80]}".encode()).hexdigest()[:16]
+            doc_id = f"va_uncodified_{year}_{chapter}_{safe}".replace(" ", "_")
+
+            metadata = {
+                "source": "Virginia Uncodified Acts",
+                "jurisdiction": "Virginia",
+                "document_type": "Session Law",
+                "citation": citation,
+                "year": year,
+                "chapter": chapter,
+                "bill": bill,
+                "session": session,
+                "subject": subject,
+                "official": True,
+            }
+            if corpus_refresh_at:
+                metadata["corpus_refresh_at"] = corpus_refresh_at
+
+            try:
+                await rag_service.add_document(text=doc_text, metadata=metadata, doc_id=doc_id)
+                ingested += 1
+                if ingested % 500 == 0:
+                    log(f"  Uncodified acts ingested: {ingested:,}...")
+                    write_progress(
+                        "uncodified",
+                        message=f"Session acts ({year})",
+                        current=ingested,
+                        total=total_uncodified or ingested or 1,
+                    )
+            except Exception as e:
+                if ingested < 3:
+                    log(f"  Uncodified ingest error: {e}", "WARNING")
+
+    write_progress(
+        "uncodified",
+        message="Uncodified acts ingest complete",
+        current=ingested,
+        total=total_uncodified or ingested or 1,
+    )
+    log(f"Uncodified acts: {ingested:,} ingested, {skipped:,} skipped", "SUCCESS")
     return ingested
 
 
@@ -222,7 +379,7 @@ async def ingest_downloaded_html():
         log(f"Processing {source_id}: {len(files)} files")
         
         ingested = 0
-        for file_path in files[:500]:  # Limit per source
+        for file_path in files[:5000]:  # Limit per source (raised for full coverage)
             try:
                 content = file_path.read_text(encoding='utf-8', errors='ignore')
                 soup = BeautifulSoup(content, 'html.parser')

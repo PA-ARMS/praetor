@@ -5,9 +5,11 @@ Provides endpoints for monitoring system health and usage statistics
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+from pathlib import Path
 import time
 import os
 import platform
+import json
 
 from server.models import get_db, User, ChatMessage, AuditLog
 from server.middleware.auth_middleware import get_current_user, require_auth
@@ -19,25 +21,44 @@ router = APIRouter()
 SERVER_START_TIME = time.time()
 
 
+def _get_last_backup_info():
+    """Read last backup timestamp from data/backups/last_backup.json if present."""
+    try:
+        backup_dir = Path(settings.DATA_DIR) / "backups"
+        path = backup_dir / "last_backup.json"
+        if path.exists():
+            with open(path) as f:
+                data = json.load(f)
+            return {
+                "timestamp": data.get("timestamp"),
+                "success": data.get("success", [])
+            }
+    except Exception:
+        pass
+    return None
+
+
 @router.get("/status")
 async def get_system_status():
-    """Get system status including uptime and basic health information"""
+    """Get system status including uptime, basic health, and last backup."""
     current_time = time.time()
     uptime_seconds = int(current_time - SERVER_START_TIME)
-    
+
     # Check if key services are available
     ollama_status = "unknown"
     try:
         import httpx
         async with httpx.AsyncClient(timeout=2.0) as client:
-            response = await client.get(f"{settings.OLLAMA_HOST}/api/tags")
+            response = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
             if response.status_code == 200:
                 ollama_status = "online"
             else:
                 ollama_status = "error"
-    except:
+    except Exception:
         ollama_status = "offline"
-    
+
+    last_backup = _get_last_backup_info()
+
     return {
         "status": "running",
         "uptime": uptime_seconds,
@@ -45,10 +66,10 @@ async def get_system_status():
         "version": "1.0.0",
         "platform": platform.system(),
         "python_version": platform.python_version(),
+        "last_backup": last_backup,
         "services": {
             "ollama": ollama_status,
-            "database": "online",
-            "tts": "online" if settings.TTS_ENABLED else "disabled"
+            "database": "online"
         }
     }
 
@@ -75,21 +96,18 @@ async def get_system_stats(
     except:
         active_today = 0
     
-    # Total queries (chat messages)
+    # Total queries (each ChatMessage = one user query + AI response)
     try:
-        total_queries = db.query(ChatMessage).filter(
-            ChatMessage.role == "user"
-        ).count()
-    except:
+        total_queries = db.query(ChatMessage).count()
+    except Exception:
         total_queries = 0
     
     # Queries today
     try:
         queries_today = db.query(ChatMessage).filter(
-            ChatMessage.role == "user",
-            ChatMessage.created_at >= today_start
+            ChatMessage.timestamp >= today_start
         ).count()
-    except:
+    except Exception:
         queries_today = 0
     
     # Documents uploaded (count from rag collection if available)

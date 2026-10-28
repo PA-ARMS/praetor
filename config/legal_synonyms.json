@@ -160,5 +160,20 @@
     "possession with intent": ["18.2-248", "pwid", "distribution"],
     "preliminary hearing": ["19.2-218", "probable cause hearing"],
     "grand jury": ["19.2-191", "indictment", "true bill"],
-    "expungement": ["19.2-392.2", "sealing records", "clearing record"]
+    "expungement": ["19.2-392.2", "sealing records", "clearing record"],
+    "license suspension": ["46.2-391", "DMV license suspension", "driving privilege", "administrative suspension"],
+    "professional license": ["54.1", "Professions and Occupations", "occupational license", "board of medicine", "board of nursing"],
+    "administrative hearing": ["agency hearing", "VAPA", "Virginia Administrative Process Act", "2.2-4000", "administrative appeal"],
+    "agency decision": ["administrative decision", "judicial review", "2.2-4027", "appeal to circuit court"],
+    "DMV suspension": ["46.2-391", "license revocation", "driving privilege suspended", "administrative license suspension"],
+    "occupational license": ["54.1", "professional licensing", "board license", "Virginia Board"],
+    "administrative procedure": ["VAPA", "2.2-4000", "rulemaking", "agency regulation"],
+    "Virginia Administrative Code": ["VAC", "regulations", "agency rules", "18 VAC", "administrative regulations"],
+    "driver's license": ["46.2", "motor vehicle", "driving privilege", "46.2-300"],
+    "contract": ["8.01-243", "breach of contract", "8.2", "UCC"],
+    "divorce": ["20", "domestic relations", "20-91", "grounds for divorce"],
+    "custody": ["20-124.1", "child custody", "best interest of child", "visitation"],
+    "child support": ["20-108.1", "20-108.2", "support obligation"],
+    "workers compensation": ["65.2", "work injury", "industrial commission", "VWC"],
+    "unemployment": ["60.2", "unemployment compensation", "VEC", "benefits"]
 }

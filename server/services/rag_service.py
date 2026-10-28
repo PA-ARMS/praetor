@@ -11,10 +11,118 @@ import json
 import re
 import asyncio
 import time
+import uuid
 import logging  # Added for log suppression
 from server.services.ollama_service import ollama_service
 from server.services.scenario_service import scenario_service
 from server.utils.logger import setup_logger
+
+
+def _sanitize_chroma_metadata(metadata: Dict) -> Dict:
+    """
+    Chroma metadata rules (see chromadb.api.types.validate_metadata):
+    - Native Python lists are rejected if empty OR not homogeneously typed.
+    - We never pass raw lists: non-empty lists become JSON strings; empty lists are omitted.
+    - Nested dicts become JSON strings.
+    """
+    if not metadata:
+        return {"source": "document"}
+    out: Dict = {}
+    for k, v in metadata.items():
+        if v is None:
+            continue
+        if isinstance(v, tuple):
+            v = list(v)
+        if isinstance(v, dict):
+            try:
+                out[k] = json.dumps(v, ensure_ascii=False)[:16000]
+            except (TypeError, ValueError):
+                out[k] = str(v)[:16000]
+            continue
+        if isinstance(v, list):
+            if len(v) == 0:
+                continue
+            flat = []
+            for item in v:
+                if item is None:
+                    continue
+                if isinstance(item, str) and not item.strip():
+                    continue
+                flat.append(item)
+            if not flat:
+                continue
+            # Store as JSON string so Chroma never applies list validation (empty / heterogeneous).
+            try:
+                serializable = []
+                for item in flat:
+                    if isinstance(item, (str, int, float, bool)):
+                        serializable.append(item)
+                    else:
+                        serializable.append(str(item)[:2000])
+                out[k] = json.dumps(serializable, ensure_ascii=False)[:16000]
+            except (TypeError, ValueError):
+                out[k] = json.dumps([str(x) for x in flat])[:16000]
+            continue
+        if isinstance(v, (str, int, float, bool)):
+            if isinstance(v, str) and len(v) > 16000:
+                out[k] = v[:16000]
+            else:
+                out[k] = v
+        else:
+            out[k] = str(v)[:16000]
+    if not out:
+        return {"source": "document"}
+    return out
+
+
+def _coerce_chroma_metadata(metadata: Dict) -> Dict:
+    """
+    Normalize for Chroma, then verify against chromadb.api.types.validate_metadata.
+    If anything still fails (edge-case types), force JSON/str so add() cannot error.
+    """
+    m = _sanitize_chroma_metadata(metadata)
+    try:
+        from chromadb.api.types import validate_metadata
+
+        validate_metadata(m)
+        return m
+    except Exception as e:
+        logging.getLogger(__name__).warning("Chroma metadata strict fallback after: %s", e)
+    out: Dict = {}
+    for k, v in m.items():
+        if v is None:
+            continue
+        if isinstance(v, (str, int, float, bool)):
+            if isinstance(v, str) and len(v) > 16000:
+                out[k] = v[:16000]
+            else:
+                out[k] = v
+        else:
+            try:
+                out[k] = json.dumps(v, default=str, ensure_ascii=False)[:16000]
+            except Exception:
+                out[k] = str(v)[:16000]
+    if not out:
+        out = {"source": "document"}
+    try:
+        from chromadb.api.types import validate_metadata
+
+        validate_metadata(out)
+    except Exception:
+        out = {"source": "document", "note": "metadata_fallback"}
+    return out
+
+
+def _get_embedding_service():
+    """Return embedding service: BGE if enabled, else Ollama."""
+    if settings.BGE_EMBEDDINGS_ENABLED:
+        try:
+            from server.services.bge_embedding_service import bge_embedding_service
+            if bge_embedding_service.is_available():
+                return bge_embedding_service
+        except Exception:
+            pass
+    return ollama_service
 
 
 class RAGService:
@@ -90,8 +198,114 @@ class RAGService:
                     
                     self.logger.info(f"Vernacular Translation: '{common_term}' -> '{db_citation}'")
 
-        # Limit to 10 variations for performance (increased to accommodate precision queries)
-        return expanded_queries[:10]
+        max_var = int(getattr(settings, "CHAT_RAG_MAX_VARIATIONS", 4) or 4)
+        return expanded_queries[:max(1, max_var)]
+
+    def _legislative_effective_date_variations(self, query: str) -> List[str]:
+        """Extra RAG queries for session-law / effective-date questions."""
+        q = query.lower()
+        extra: List[str] = []
+        if re.search(r"july\s*1|effective\s+date|take\s+effect|enact", q):
+            extra.append("Virginia uncodified act effective date July 1")
+            extra.append("Virginia session law enacted effective")
+        if re.search(r"\b20\d{2}\b", q):
+            year = re.search(r"\b(20\d{2})\b", q)
+            if year:
+                extra.append(f"Virginia Acts {year.group(1)} Chapter effective")
+        return extra[:2]
+
+    async def search_fast(
+        self,
+        query: str,
+        n_results: int = 8,
+        filters: Optional[Dict] = None,
+        use_synonyms: bool = True,
+    ) -> List[Dict]:
+        """
+        Faster RAG path for chat: capped synonym variations, parallel embed/search.
+        Does not query scenario DB or run case-context analysis.
+        """
+        n_results = n_results or int(getattr(settings, "CHAT_SIMPLE_N_RESULTS", 8) or 8)
+        variations: List[str] = [query]
+        if use_synonyms:
+            variations = self._expand_query_with_synonyms(query)
+            variations.extend(self._legislative_effective_date_variations(query))
+            max_var = int(getattr(settings, "CHAT_RAG_MAX_VARIATIONS", 4) or 4)
+            # Deduplicate while preserving order
+            seen_v: set = set()
+            deduped: List[str] = []
+            for v in variations:
+                key = v.lower().strip()
+                if key not in seen_v:
+                    seen_v.add(key)
+                    deduped.append(v)
+            variations = deduped[: max(1, max_var + 2)]
+        if len(variations) > 1:
+            return await self._search_with_variations(variations, n_results, filters)
+        return await self.search(query, n_results, filters=filters, use_synonyms=False)
+
+    async def search_legislative_effective_date(
+        self,
+        query: str,
+        year: Optional[int] = None,
+        n_results: int = 15,
+    ) -> List[Dict]:
+        """
+        Search for session laws / statutes mentioning an effective date (e.g. July 1, 2026).
+        Filters semantic hits to those whose text mentions the target year and July/effective language.
+        """
+        year = year or 2026
+        year_s = str(year)
+        queries = [
+            query,
+            f"Virginia uncodified act {year} chapter effective",
+            f"Virginia Code effective July 1 {year}",
+            f"Va. Acts {year}",
+            f"enactment effective date {year} Virginia",
+        ]
+        raw: List[Dict] = []
+        seen: set = set()
+        for q in queries[:5]:
+            batch = await self.search_fast(q, n_results=n_results, use_synonyms=False)
+            for hit in batch:
+                hid = hit.get("id")
+                if hid and hid not in seen:
+                    seen.add(hid)
+                    raw.append(hit)
+
+        july_re = re.compile(rf"july\s*1[,]?\s*{year_s}", re.I)
+        effective_re = re.compile(
+            rf"(effective|shall take effect|becomes effective).{{0,80}}{year_s}|{year_s}.{{0,80}}(effective|take effect)",
+            re.I | re.DOTALL,
+        )
+
+        def _relevant(hit: Dict) -> bool:
+            text = (hit.get("text") or "").lower()
+            meta = hit.get("metadata") or {}
+            meta_year = str(meta.get("year") or "")
+            if meta_year == year_s:
+                return True
+            if july_re.search(text):
+                return True
+            if effective_re.search(text):
+                return True
+            if f"acts {year_s}" in text or f"act of {year_s}" in text:
+                return True
+            return False
+
+        filtered = [h for h in raw if _relevant(h)]
+        if filtered:
+            return filtered[:n_results]
+
+        # Metadata-only match (e.g. uncodified act row for target year)
+        year_meta = [
+            h for h in raw
+            if str((h.get("metadata") or {}).get("year") or "") == year_s
+        ]
+        if year_meta:
+            return year_meta[:n_results]
+
+        return []
 
     async def _find_relevant_case_context(self, query: str, max_cases: int = 3) -> List[Dict]:
         """
@@ -107,6 +321,8 @@ class RAGService:
         Returns:
             List of relevant case contexts with legal concepts
         """
+        if not settings.SCENARIO_DB_ENABLED or getattr(settings, "CHAT_SKIP_CASE_CONTEXT", True):
+            return []
         try:
             # Add timeout to prevent hanging - scenario service can be slow
             import asyncio
@@ -468,148 +684,106 @@ class RAGService:
     async def _search_with_variations(self, query_variations: List[str], n_results: int, filters: Optional[Dict] = None) -> List[Dict]:
         """
         Search using multiple query variations and combine/deduplicate results.
-        This ensures that legal terminology synonyms are all searched.
-
-        PRIORITY SYSTEM:
-        1. Results containing specific citations (e.g., "18.2-57.2") get highest priority
-        2. Results from authoritative sources get higher priority
-        3. Results with lower semantic distance get higher priority
-
-        Args:
-            query_variations: List of query strings to search
-            n_results: Number of results to return
-            filters: Optional metadata filters
+        Variations run in parallel (bounded) to reduce chat latency.
         """
-        all_results = []
-        seen_ids = set()
-
-        # Check if any variation contains a citation - if so, prioritize citation matches
+        all_results: List[Dict] = []
+        seen_ids: set = set()
         has_citation_in_variations = any(self._extract_citation(var) for var in query_variations)
-        citation_matches = []
+        citation_matches: List[str] = []
+        merge_lock = asyncio.Lock()
 
-        # Search each variation
-        for query_var in query_variations:
-            # Generate embedding for this variation
-            query_embedding = await ollama_service.embed(query_var)
-
-            # Search collection
+        async def _search_one(query_var: str) -> None:
+            embed_svc = _get_embedding_service()
+            query_embedding = await embed_svc.embed(query_var)
             raw = self.collection.query(
                 query_embeddings=[query_embedding],
-                n_results=min(n_results * 2, 20),  # Get more results per query for better coverage
-                where=filters if filters else None
+                n_results=min(n_results * 2, 20),
+                where=filters if filters else None,
             )
-
-            # Process results
-            ids = raw.get('ids', [[]])[0]
-            docs = raw.get('documents', [[]])[0]
-            metas = raw.get('metadatas', [[]])[0]
-            dists = raw.get('distances', [[]])[0] if raw.get('distances') else []
-
+            ids = raw.get("ids", [[]])[0]
+            docs = raw.get("documents", [[]])[0]
+            metas = raw.get("metadatas", [[]])[0]
+            dists = raw.get("distances", [[]])[0] if raw.get("distances") else []
+            local_hits: List[Dict] = []
             for i in range(len(ids)):
                 doc_id = ids[i]
-                if doc_id not in seen_ids:
+                meta = metas[i] or {}
+                source_name = meta.get("source", "")
+                priority = self._get_source_priority(source_name)
+                dist = dists[i] if i < len(dists) else None
+                text = docs[i]
+                priority_score = priority
+                source_upper = source_name.upper()
+                case_name_upper = (meta.get("case_name", "") or "").upper()
+                jurisdiction = meta.get("jurisdiction", "")
+                content_type = meta.get("content_type", "")
+                scotus_indicators = [
+                    "SCOTUS", "SUPREME COURT", "SUPREME COURT OF THE UNITED STATES",
+                    "U.S. SUPREME COURT", "US SUPREME COURT", "UNITED STATES SUPREME COURT",
+                    "SCOTUS OPINIONS", "SCOTUS_OPINIONS",
+                ]
+                is_scotus = any(ind in source_upper for ind in scotus_indicators)
+                if not is_scotus:
+                    is_scotus = any(ind in case_name_upper for ind in scotus_indicators)
+                if not is_scotus and jurisdiction == "Federal" and content_type == "case_law":
+                    is_scotus = True
+                if is_scotus:
+                    priority_score = -100
+                    if dist is not None:
+                        dist = dist * 0.1
+                if has_citation_in_variations:
+                    citation_in_text = self._extract_citation(text)
+                    if citation_in_text:
+                        priority_score -= 3
+                statute_patterns = [
+                    r"§\s*\d+\.\d+-\d+\.",
+                    r"is guilty of",
+                    r"shall be punished",
+                    r"Any person who",
+                    r"commits an assault",
+                    r"family or household member",
+                ]
+                statute_content_boost = sum(
+                    1 for p in statute_patterns if re.search(p, text, re.IGNORECASE)
+                )
+                if statute_content_boost > 0:
+                    priority_score -= statute_content_boost
+                title_page_indicators = [
+                    "LIS", "Session Information", "Bills & Resolutions",
+                    "State Budget", "Virginia Law", "Reports to the General Assembly",
+                    "Code of Virginia - Title", "Chapter 1. Code of Virginia",
+                ]
+                title_penalty = sum(1 for ind in title_page_indicators if ind in text)
+                if title_penalty > 0:
+                    priority_score += title_penalty
+                local_hits.append({
+                    "id": doc_id,
+                    "text": text,
+                    "metadata": meta,
+                    "distance": dist,
+                    "priority": priority_score,
+                    "matched_query": query_var,
+                    "_citation_boost": bool(
+                        has_citation_in_variations and self._extract_citation(text)
+                    ),
+                })
+            async with merge_lock:
+                for hit in local_hits:
+                    doc_id = hit["id"]
+                    if doc_id in seen_ids:
+                        continue
                     seen_ids.add(doc_id)
-                    meta = metas[i] or {}
-                    source_name = meta.get('source', '')
-                    priority = self._get_source_priority(source_name)
-                    dist = dists[i] if i < len(dists) else None
-                    text = docs[i]
+                    if hit.pop("_citation_boost", False) and doc_id not in citation_matches:
+                        citation_matches.append(doc_id)
+                    all_results.append(hit)
 
-                    # Calculate enhanced priority score
-                    priority_score = priority
-                    
-                    # CRITICAL BOOST: SCOTUS/Federal case law per AI Laws hierarchy
-                    # SCOTUS is #1: "United States Constitution and U.S. Supreme Court precedent (binding on all jurisdictions)"
-                    # Check multiple variations of SCOTUS references
-                    source_upper = source_name.upper()
-                    case_name_upper = (meta.get('case_name', '') or '').upper()
-                    jurisdiction = meta.get('jurisdiction', '')
-                    content_type = meta.get('content_type', '')
-                    
-                    scotus_indicators = [
-                        'SCOTUS',
-                        'SUPREME COURT',
-                        'SUPREME COURT OF THE UNITED STATES',
-                        'U.S. SUPREME COURT',
-                        'US SUPREME COURT',
-                        'UNITED STATES SUPREME COURT',
-                        'SCOTUS OPINIONS',
-                        'SCOTUS_OPINIONS'
-                    ]
-                    
-                    is_scotus = False
-                    # Check source name
-                    for indicator in scotus_indicators:
-                        if indicator in source_upper:
-                            is_scotus = True
-                            break
-                    
-                    # Check case name
-                    if not is_scotus:
-                        for indicator in scotus_indicators:
-                            if indicator in case_name_upper:
-                                is_scotus = True
-                                break
-                    
-                    # Also check if it's Federal case law (SCOTUS is Federal)
-                    if not is_scotus and jurisdiction == 'Federal' and content_type == 'case_law':
-                        is_scotus = True
-                    
-                    if is_scotus:
-                        priority_score = -100  # Maximum boost for SCOTUS/Federal cases
-                        # Also boost by reducing distance
-                        if dist is not None:
-                            dist = dist * 0.1  # Make SCOTUS appear 10x closer
-                        self.logger.debug(f"Maximum boost for SCOTUS/Federal case: {source_name}")
+        sem = asyncio.Semaphore(4)
 
-                    # BOOST: If this variation contained a citation, boost results with citations
-                    if has_citation_in_variations:
-                        citation_in_text = self._extract_citation(text)
-                        if citation_in_text:
-                            priority_score -= 3  # Major boost for citation matches
-                            citation_matches.append(doc_id)
+        async def _bounded(q: str) -> None:
+            async with sem:
+                await _search_one(q)
 
-                    # BOOST: Strongly boost results that contain statute content (not just titles)
-                    statute_patterns = [
-                        r'§\s*\d+\.\d+-\d+\.',  # § X.X-XX. (actual statute start)
-                        r'is guilty of',        # Criminal penalty language
-                        r'shall be punished',   # Penalty language
-                        r'Any person who',      # Common statute opening
-                        r'commits an assault',  # Specific to assault statutes
-                        r'family or household member'  # Specific to domestic violence
-                    ]
-
-                    statute_content_boost = 0
-                    for pattern in statute_patterns:
-                        if re.search(pattern, text, re.IGNORECASE):
-                            statute_content_boost += 1
-
-                    if statute_content_boost > 0:
-                        priority_score -= statute_content_boost  # Boost for each statute indicator
-
-                    # PENALIZE: Title pages and navigation content
-                    title_page_indicators = [
-                        'LIS', 'Session Information', 'Bills & Resolutions',
-                        'State Budget', 'Virginia Law', 'Reports to the General Assembly',
-                        'Code of Virginia - Title', 'Chapter 1. Code of Virginia'
-                    ]
-
-                    title_penalty = 0
-                    for indicator in title_page_indicators:
-                        if indicator in text:
-                            title_penalty += 1
-
-                    if title_penalty > 0:
-                        priority_score += title_penalty  # Penalty for title pages
-
-                    all_results.append({
-                        "id": doc_id,
-                        "text": text,
-                        "metadata": meta,
-                        "distance": dist,
-                        "priority": priority_score,
-                        "matched_query": query_var
-                    })
+        await asyncio.gather(*[_bounded(q) for q in query_variations])
 
         # === EXPLICITLY ADD MISSING CITATIONS ===
         # If we found citation-based queries but vector search didn't return the actual document,
@@ -681,7 +855,7 @@ class RAGService:
         self._catalog = None  # source name -> priority
         self._query_cache = {}
         self._cache_keys = []
-        self._cache_capacity = 2048  # Increased from 256 to leverage 32GB RAM
+        self._cache_capacity: int = getattr(settings, "RAG_QUERY_CACHE_SIZE", 256)
         self.logger = setup_logger("rag")
         
         # Load configuration data
@@ -747,7 +921,29 @@ class RAGService:
                 self._catalog = mapping
         except Exception:
             self._catalog = {}
-    
+
+    def _collection_count(self) -> int:
+        """
+        Return number of rows without loading all IDs into SQLite IN-clauses.
+        Unbounded collection.get() triggers: too many SQL variables on large corpora.
+        """
+        self._ensure_initialized()
+        try:
+            return int(self.collection.count())
+        except Exception as e:
+            self.logger.warning(f"collection.count() failed ({e}); batched fallback")
+            total = 0
+            batch = 400
+            offset = 0
+            while True:
+                part = self.collection.get(limit=batch, offset=offset, include=[])
+                ids = part.get("ids") or []
+                total += len(ids)
+                if len(ids) < batch:
+                    break
+                offset += batch
+            return total
+
     def _get_source_priority(self, source_name: str) -> int:
         """
         Get source priority with robust matching (case-insensitive, partial matching)
@@ -804,6 +1000,55 @@ class RAGService:
         
         # No match found - default to secondary
         return 5
+
+    def get_chunks_for_sources(self, sources: List[str], limit: int = 80) -> List[Dict]:
+        """
+        Fetch indexed chunks by upload filename(s). Does not use embeddings—reliable right after upload.
+        Matches metadata ``source`` or ``original_filename`` (same value on ingest).
+        """
+        self._ensure_initialized()
+        if not sources:
+            return []
+        names = list(dict.fromkeys(s.strip() for s in sources if s and str(s).strip()))
+        if not names:
+            return []
+        try:
+            res = self.collection.get(
+                where={
+                    "$or": [
+                        {"source": {"$in": names}},
+                        {"original_filename": {"$in": names}},
+                    ]
+                },
+                limit=limit,
+            )
+        except Exception as e:
+            self.logger.warning(f"get_chunks_for_sources $or failed, retrying source-only: {e}")
+            try:
+                res = self.collection.get(where={"source": {"$in": names}}, limit=limit)
+            except Exception as e2:
+                self.logger.warning(f"get_chunks_for_sources failed for {names}: {e2}")
+                return []
+
+        ids = res.get("ids") or []
+        docs = res.get("documents") or []
+        metas = res.get("metadatas") or []
+        out: List[Dict] = []
+        for i in range(len(ids)):
+            text = (docs[i] if i < len(docs) else "") or ""
+            text = text.strip()
+            if not text:
+                continue
+            meta = metas[i] if i < len(metas) else {}
+            out.append(
+                {
+                    "id": ids[i],
+                    "text": text,
+                    "metadata": meta or {},
+                    "distance": None,
+                }
+            )
+        return out
     
     async def add_document(self, text: str, metadata: Dict, doc_id: Optional[str] = None):
         """Add document to vector database with chunking for large documents"""
@@ -827,20 +1072,24 @@ class RAGService:
             if extracted_citation:
                 metadata['citation'] = extracted_citation
                 self.logger.debug(f"Extracted citation {extracted_citation} from document")
+
+        metadata = _coerce_chroma_metadata(metadata)
         
         # Chunk large documents for better searchability (max 2000 chars per chunk)
         CHUNK_SIZE = 2000
         CHUNK_OVERLAP = 200
+
+        resolved_doc_id = doc_id if doc_id else f"upload_{uuid.uuid4().hex}"
         
         if len(text) <= CHUNK_SIZE:
             # Small document - add as single chunk
-            embedding = await ollama_service.embed(text)
-            final_doc_id = doc_id if doc_id else f"doc_{len(self.collection.get()['ids'])}"
+            embed_svc = _get_embedding_service()
+            embedding = await embed_svc.embed(text)
             self.collection.add(
                 embeddings=[embedding],
                 documents=[text],
                 metadatas=[metadata],
-                ids=[final_doc_id]
+                ids=[resolved_doc_id]
             )
         else:
             # Large document - split into chunks
@@ -867,24 +1116,25 @@ class RAGService:
             
             # Generate embeddings for all chunks
             chunk_texts = [chunk[0] for chunk in chunks]
-            embeddings = await asyncio.gather(*[ollama_service.embed(chunk_text) for chunk_text in chunk_texts])
+            embed_svc = _get_embedding_service()
+            embeddings = await asyncio.gather(*[embed_svc.embed(chunk_text) for chunk_text in chunk_texts])
             
             # Add chunks to collection
             chunk_ids = []
             chunk_docs = []
             chunk_metas = []
             
-            base_id = doc_id if doc_id else f"doc_{len(self.collection.get()['ids'])}"
+            base_id = resolved_doc_id
             
             for i, (chunk_text, start_pos, end_pos) in enumerate(chunks):
-                chunk_meta = metadata.copy()
-                # Chunks inherit the citation from the parent document
-                # This ensures exact citation matching works even for chunked documents
-                chunk_meta['chunk_index'] = i
-                chunk_meta['chunk_start'] = start_pos
-                chunk_meta['chunk_end'] = end_pos
-                chunk_meta['total_chunks'] = len(chunks)
-                chunk_meta['is_chunk'] = True
+                chunk_meta = _coerce_chroma_metadata({
+                    **metadata,
+                    "chunk_index": i,
+                    "chunk_start": start_pos,
+                    "chunk_end": end_pos,
+                    "total_chunks": len(chunks),
+                    "is_chunk": True,
+                })
                 
                 chunk_ids.append(f"{base_id}_chunk_{i}")
                 chunk_docs.append(chunk_text)
@@ -898,21 +1148,39 @@ class RAGService:
             )
     
     def _extract_citation(self, query: str) -> Optional[str]:
-        """Extract Virginia Code citation from query
+        """Extract Virginia Code or Virginia Administrative Code citation from query
         
-        Examples:
+        Virginia Code examples:
             "18.2-57.2" -> "§ 18.2-57.2"
             "va code 18.2-95" -> "§ 18.2-95"
             "§ 19.2-81" -> "§ 19.2-81"
-            "8.01-195.1" -> "§ 8.01-195.1"
+        
+        Virginia Administrative Code (VAC) examples:
+            "18 VAC 120-10-10" -> "18 VAC 120-10-10"
+            "VAC 18-120-10" -> "18 VAC 120-10"
         """
-        # Pattern: title-section or title-section.subsection
-        # Examples: 18.2-57.2, 8.01-195.1, 19.2-81
+        # Check for VAC (Virginia Administrative Code) first - format: 18 VAC 120-10-10
+        vac_patterns = [
+            r'(\d+)\s*VAC\s*(\d+)[-.](\d+)[-.]?(\d*)',   # 18 VAC 120-10-10 or 18 VAC 120-10
+            r'VAC\s*(\d+)[-.](\d+)[-.]?(\d*)',            # VAC 18-120-10
+        ]
+        for pattern in vac_patterns:
+            match = re.search(pattern, query, re.IGNORECASE)
+            if match:
+                groups = match.groups()
+                if len(groups) == 4 and groups[3]:
+                    return f"{groups[0]} VAC {groups[1]}-{groups[2]}-{groups[3]}"
+                elif len(groups) == 4:
+                    return f"{groups[0]} VAC {groups[1]}-{groups[2]}"
+                elif len(groups) == 3:
+                    # VAC 18-120-10 -> 18 VAC 120-10
+                    return f"{groups[0]} VAC {groups[1]}-{groups[2]}" if groups[2] else f"{groups[0]} VAC {groups[1]}"
+        
+        # Virginia Code: title-section or title-section.subsection
         pattern = r'(\d+\.?\d*-\d+\.?\d*(?:\.\d+)?)'
         match = re.search(pattern, query)
         if match:
             citation = match.group(1)
-            # Normalize to include § symbol
             if not citation.startswith('§'):
                 citation = f"§ {citation}"
             return citation
@@ -973,10 +1241,23 @@ class RAGService:
         if not text or len(text) < 50:
             return None
         
-        # Patterns in order of specificity (most specific first)
-        # We search the first 2000 characters to find the primary citation
         search_text = text[:2000] if len(text) > 2000 else text
         
+        # VAC (Virginia Administrative Code) patterns first - for regulations
+        vac_patterns = [
+            r'(\d+)\s*VAC\s*(\d+)[-.](\d+)[-.]?(\d*)',   # 18 VAC 120-10-10
+            r'Virginia\s+Administrative\s+Code\s+(\d+)\s*VAC\s*(\d+)[-.](\d+)',
+        ]
+        for pattern in vac_patterns:
+            match = re.search(pattern, search_text, re.IGNORECASE)
+            if match:
+                groups = match.groups()
+                if len(groups) >= 3:
+                    if len(groups) == 4 and groups[3]:
+                        return f"{groups[0]} VAC {groups[1]}-{groups[2]}-{groups[3]}"
+                    return f"{groups[0]} VAC {groups[1]}-{groups[2]}"
+        
+        # Virginia Code patterns
         patterns = [
             (r'§\s*(\d+\.?\d*-\d+\.?\d*(?:\.\d+)?)', 'explicit'),  # § 46.2-391
             (r'Section\s+(\d+\.?\d*-\d+\.?\d*(?:\.\d+)?)', 'section'),  # Section 46.2-391
@@ -984,7 +1265,7 @@ class RAGService:
             (r'Code\s+of\s+Virginia\s+§\s*(\d+\.?\d*-\d+\.?\d*(?:\.\d+)?)', 'code_of_va'),  # Code of Virginia § 46.2-391
         ]
         
-        # Try specific patterns first
+        # Try Virginia Code patterns
         for pattern, _ in patterns:
             match = re.search(pattern, search_text, re.IGNORECASE)
             if match:
@@ -1036,7 +1317,9 @@ class RAGService:
         # Check if query contains a Virginia Code citation
         citation = self._extract_citation(query)
         
-        if citation:
+        # Do not short-circuit into statute-only retrieval when caller passed metadata filters
+        # (e.g. chat attachment workflow: source $in filenames).
+        if citation and filters is None:
             self.logger.info(f"Citation detected in query: {citation}")
             # Try exact metadata filter first for citation queries
             try:
@@ -1080,12 +1363,14 @@ class RAGService:
                 pass
         
         # === STANDARD SEMANTIC SEARCH ===
-        # Cache
-        cache_key = f"{query}::{n_results}"
+        # Cache (must include filters—otherwise filtered attachment searches reuse wrong results)
+        filter_key = json.dumps(filters, sort_keys=True, default=str) if filters else ""
+        cache_key = f"{query}::{n_results}::{filter_key}"
         if cache_key in self._query_cache:
             return self._query_cache[cache_key]
         # Generate query embedding
-        query_embedding = await ollama_service.embed(query)
+        embed_svc = _get_embedding_service()
+        query_embedding = await embed_svc.embed(query)
         
         # Search collection - request at least n_results, but ChromaDB may return more
         # We'll limit after scoring
@@ -1204,14 +1489,207 @@ class RAGService:
         
         return "\n\n".join(context_parts)
     
+    # Core laws: system-ingested statutes/case law that must not be deleted or overwritten.
+    # Documents matching these sources or doc_id prefix are read-only for the UI/API.
+    CORE_LAW_DOC_ID_PREFIX = "va_code_"
+    CORE_LAW_SOURCE_NAMES = frozenset([
+        "code of virginia", "va code", "virginia code",
+        "virginia uncodified acts", "uncodified",
+        "scotus opinions", "scotus portal", "supreme court of the united states",
+        "virginia administrative code", "va admin code", "va register",
+        "virginia courts", "virginia courts opinions portal", "va opinions",
+        "united states code", "us code", "us code olrc", "us code govinfo", "u.s. code",
+        "code of federal regulations", "cfr", "ecfr",
+        "federal register", "us courts rules", "scotus",
+    ])
+    
+    def _is_core_laws_document(self, doc_id: str, metadata: Optional[Dict] = None) -> bool:
+        """Return True if this doc is part of the system's core laws (not user uploads)."""
+        if not doc_id:
+            return False
+        if doc_id.startswith(self.CORE_LAW_DOC_ID_PREFIX):
+            return True
+        if metadata:
+            source = (metadata.get("source") or "").strip().lower()
+            if source and any(core in source for core in self.CORE_LAW_SOURCE_NAMES):
+                return True
+        return False
+    
     def get_collection_stats(self) -> Dict:
         """Get statistics about the corpus"""
         self._ensure_initialized()
-        collection_data = self.collection.get()
         return {
-            "total_documents": len(collection_data['ids']),
+            "total_documents": self._collection_count(),
             "collection_name": "legal_corpus"
         }
+
+    def list_documents(self, matter_id: Optional[str] = None) -> List[Dict]:
+        """
+        List indexed documents (deduplicated by base doc_id; chunks grouped).
+        Optionally filter by matter_id (metadata field set on upload).
+        """
+        self._ensure_initialized()
+        seen_base: Dict[str, Dict] = {}
+        batch_size = 400
+        offset = 0
+        while True:
+            data = self.collection.get(
+                limit=batch_size,
+                offset=offset,
+                include=["metadatas"],
+            )
+            ids_list = data.get("ids") or []
+            metadatas_list = data.get("metadatas") or []
+            if not ids_list:
+                break
+            for i, doc_id in enumerate(ids_list):
+                base_id = doc_id.split("_chunk_")[0] if "_chunk_" in doc_id else doc_id
+                if base_id in seen_base:
+                    continue
+                meta = (metadatas_list[i] or {}) if i < len(metadatas_list) else {}
+                if matter_id is not None:
+                    mid = meta.get("matter_id")
+                    if mid is not None and str(mid) != str(matter_id):
+                        continue
+                seen_base[base_id] = {
+                    "doc_id": base_id,
+                    "source": meta.get("source", ""),
+                    "matter_id": meta.get("matter_id"),
+                    "upload_date": meta.get("upload_date", ""),
+                    "jurisdiction": meta.get("jurisdiction", ""),
+                    "document_type": meta.get("document_type", ""),
+                    "is_core": self._is_core_laws_document(base_id, meta),
+                }
+            offset += len(ids_list)
+            if len(ids_list) < batch_size:
+                break
+        return list(seen_base.values())
+
+    def _collect_ids_for_doc(self, doc_id: str) -> List[str]:
+        """Return all collection ids for a base doc_id including chunk suffixes."""
+        to_delete: List[str] = []
+        batch_size = 400
+        offset = 0
+        while True:
+            data = self.collection.get(
+                limit=batch_size,
+                offset=offset,
+                include=[],
+            )
+            ids_list = data.get("ids") or []
+            if not ids_list:
+                break
+            for rid in ids_list:
+                if rid == doc_id or rid.startswith(doc_id + "_chunk_"):
+                    to_delete.append(rid)
+            offset += len(ids_list)
+            if len(ids_list) < batch_size:
+                break
+        return to_delete
+
+    def _is_va_statute_document(self, doc_id: str, metadata: Optional[Dict]) -> bool:
+        """True if document is Virginia Code corpus (CSV or legacy ingest)."""
+        if doc_id.startswith(self.CORE_LAW_DOC_ID_PREFIX):
+            return True
+        if doc_id.startswith("va_uncodified_"):
+            return True
+        if not metadata:
+            return False
+        source = (metadata.get("source") or "").strip().lower()
+        if source == "code of virginia":
+            return True
+        if source.startswith("code of virginia"):
+            return True
+        if "uncodified" in source or source == "virginia uncodified acts":
+            return True
+        return False
+
+    def purge_va_statutes(self) -> int:
+        """
+        Remove all Virginia Code statute documents from the vector DB.
+        Used by scheduled corpus refresh (scripts/update_va_legal_corpus.py).
+        """
+        self._ensure_initialized()
+        to_delete: List[str] = []
+        batch_size = 400
+        offset = 0
+        while True:
+            data = self.collection.get(
+                limit=batch_size,
+                offset=offset,
+                include=["metadatas"],
+            )
+            ids_list = data.get("ids") or []
+            metadatas_list = data.get("metadatas") or []
+            if not ids_list:
+                break
+            for i, rid in enumerate(ids_list):
+                meta = (metadatas_list[i] or {}) if i < len(metadatas_list) else {}
+                if self._is_va_statute_document(rid, meta):
+                    to_delete.append(rid)
+            offset += len(ids_list)
+            if len(ids_list) < batch_size:
+                break
+        if not to_delete:
+            return 0
+        step = 400
+        for i in range(0, len(to_delete), step):
+            self.collection.delete(ids=to_delete[i : i + step])
+        self.logger.info(f"Purged {len(to_delete)} Virginia Code vectors for corpus refresh")
+        return len(to_delete)
+
+    async def upsert_document(self, text: str, metadata: Dict, doc_id: str) -> None:
+        """Replace a document by doc_id (maintenance ingest; bypasses UI delete guard)."""
+        self._ensure_initialized()
+        existing = self._collect_ids_for_doc(doc_id)
+        if existing:
+            step = 400
+            for i in range(0, len(existing), step):
+                self.collection.delete(ids=existing[i : i + step])
+        await self.add_document(text=text, metadata=metadata, doc_id=doc_id)
+
+    def delete_document(self, doc_id: str) -> int:
+        """
+        Delete a document and all its chunks from the collection. Returns count of deleted ids.
+        Core laws (system statutes/case law) cannot be deleted.
+        """
+        self._ensure_initialized()
+        to_delete: List[str] = []
+        first_meta: Optional[Dict] = None
+        batch_size = 400
+        offset = 0
+        while True:
+            data = self.collection.get(
+                limit=batch_size,
+                offset=offset,
+                include=["metadatas"],
+            )
+            ids_list = data.get("ids") or []
+            metadatas_list = data.get("metadatas") or []
+            if not ids_list:
+                break
+            for i, rid in enumerate(ids_list):
+                if rid == doc_id or rid.startswith(doc_id + "_chunk_"):
+                    to_delete.append(rid)
+                    if first_meta is None:
+                        first_meta = (metadatas_list[i] or {}) if i < len(metadatas_list) else {}
+            offset += len(ids_list)
+            if len(ids_list) < batch_size:
+                break
+        if not to_delete:
+            return 0
+        # Check if this document is part of the system's core laws (do not allow delete)
+        meta = first_meta or {}
+        if self._is_core_laws_document(doc_id, meta):
+            self.logger.warning(f"Blocked delete of core laws document: doc_id={doc_id}, source={meta.get('source')}")
+            raise PermissionError(
+                "Cannot delete: this document is part of the system's core laws. "
+                "Only user-uploaded documents can be removed."
+            )
+        step = 400
+        for i in range(0, len(to_delete), step):
+            self.collection.delete(ids=to_delete[i : i + step])
+        return len(to_delete)
 
     def _detect_specific_statute_request(self, query: str) -> Dict:
         """
